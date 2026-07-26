@@ -1,0 +1,9 @@
+# environnement Python local
+venv/
+
+# captures d'analyseur logique (volumineuses, specifiques a une session)
+*.csv
+*.sr
+
+# macOS
+.DS_Store

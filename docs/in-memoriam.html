@@ -1,0 +1,341 @@
+<style>
+  :root {
+    --parchment:      #F1E6C6;
+    --parchment-hi:   #F7EFD6;
+    --parchment-edge: #E4D2A2;
+    --ink:            #2E2314;
+    --ink-soft:       #5C4A30;
+    --gold:           #9C7618;
+    --gold-bright:    #C6A02A;
+    --danger:         #8E2C18;
+    --rule:           rgba(46, 35, 20, 0.28);
+    --wall:           #C9BFA6;   /* light mat around the certificate */
+    --wall-2:         #BDB293;
+    --serif: "Hoefler Text", "Baskerville", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    --mono:  "SF Mono", "JetBrains Mono", "IBM Plex Mono", "Courier New", monospace;
+  }
+
+  /* Dark viewers: hang the certificate on a dark walnut wall; the parchment itself is unchanged. */
+  @media (prefers-color-scheme: dark) {
+    :root { --wall: #1B1712; --wall-2: #120F0B; }
+  }
+  :root[data-theme="dark"]  { --wall: #1B1712; --wall-2: #120F0B; }
+  :root[data-theme="light"] { --wall: #C9BFA6; --wall-2: #BDB293; }
+
+  .wall {
+    min-height: 100%;
+    box-sizing: border-box;
+    padding: clamp(1rem, 4vw, 3.5rem);
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    background:
+      radial-gradient(120% 80% at 50% 0%, var(--wall) 0%, var(--wall-2) 100%);
+    font-family: var(--serif);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .cert {
+    width: min(760px, 100%);
+    background:
+      radial-gradient(140% 120% at 25% 10%, var(--parchment-hi) 0%, var(--parchment) 42%, var(--parchment-edge) 100%);
+    color: var(--ink);
+    box-shadow:
+      0 1px 0 rgba(255,255,255,.4) inset,
+      0 24px 60px -24px rgba(0,0,0,.55);
+    animation: rise .8s cubic-bezier(.2,.7,.2,1) both;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .cert { animation: none; } }
+
+  /* engraved double frame */
+  .frame {
+    border: 2px solid var(--gold);
+    outline: 1px solid var(--rule);
+    outline-offset: 6px;
+    margin: 10px;
+    padding: clamp(1.6rem, 5vw, 3.2rem) clamp(1.2rem, 5vw, 3rem) clamp(1.4rem, 4vw, 2.6rem);
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 1.15rem;
+  }
+  .frame::before {
+    content: "";
+    position: absolute;
+    inset: 5px;
+    border: 1px solid color-mix(in srgb, var(--gold) 55%, transparent);
+    pointer-events: none;
+  }
+  .corner { position: absolute; color: var(--gold); font-size: 1.1rem; line-height: 1; }
+  .corner.tl { top: 10px; left: 12px; }
+  .corner.tr { top: 10px; right: 12px; }
+  .corner.bl { bottom: 10px; left: 12px; }
+  .corner.br { bottom: 10px; right: 12px; }
+
+  .eyebrow {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: .66rem;
+    letter-spacing: .32em;
+    text-transform: uppercase;
+    color: var(--gold);
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(2.1rem, 7vw, 3.4rem);
+    font-weight: 700;
+    line-height: 1.02;
+    letter-spacing: .01em;
+    text-wrap: balance;
+    color: var(--ink);
+  }
+  .sub {
+    margin: 0;
+    font-style: italic;
+    font-size: clamp(.95rem, 2.4vw, 1.1rem);
+    color: var(--ink-soft);
+  }
+
+  .divider {
+    width: 100%;
+    max-width: 340px;
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    color: var(--gold);
+    margin: .1rem 0;
+  }
+  .divider::before, .divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--rule), transparent);
+  }
+
+  .seal { width: clamp(150px, 34vw, 196px); height: auto; margin: .2rem 0 -.2rem; }
+
+  .present { margin: 0; font-size: 1rem; color: var(--ink-soft); }
+
+  .honorees {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: baseline;
+    gap: .4rem 1.4rem;
+    margin: .1rem 0;
+  }
+  .name { font-size: clamp(1.35rem, 4vw, 1.9rem); font-weight: 700; letter-spacing: .01em; }
+  .name .rank {
+    display: block;
+    font-family: var(--mono);
+    font-size: .6rem;
+    font-weight: 400;
+    letter-spacing: .28em;
+    text-transform: uppercase;
+    color: var(--gold);
+    margin-bottom: .15rem;
+  }
+  .amp { font-family: var(--serif); font-style: italic; font-size: 1.5rem; color: var(--gold); }
+
+  .unit {
+    margin: -.3rem 0 0;
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  .citation {
+    margin: .2rem 0;
+    max-width: 54ch;
+    font-size: 1.02rem;
+    line-height: 1.62;
+    color: var(--ink);
+  }
+  .citation .hot { color: var(--danger); font-weight: 700; white-space: nowrap; }
+
+  .epitaph {
+    margin: .2rem 0;
+    max-width: 50ch;
+    padding: 1rem 1.4rem;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    font-style: italic;
+    font-size: 1rem;
+    line-height: 1.6;
+    color: var(--ink-soft);
+  }
+  .epitaph .sig {
+    display: block;
+    margin-top: .7rem;
+    font-style: normal;
+    font-family: var(--mono);
+    font-size: .82rem;
+    letter-spacing: .12em;
+    color: var(--ink);
+  }
+
+  .registre {
+    width: 100%;
+    max-width: 560px;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: .72rem;
+    color: var(--ink);
+    margin: .1rem 0;
+  }
+  .registre caption {
+    font-size: .6rem;
+    letter-spacing: .28em;
+    text-transform: uppercase;
+    color: var(--gold);
+    padding-bottom: .5rem;
+  }
+  .registre th, .registre td {
+    border: 1px solid var(--rule);
+    padding: .4rem .6rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  .registre th { font-weight: 700; letter-spacing: .06em; background: color-mix(in srgb, var(--gold) 12%, transparent); }
+  .registre .kill { color: var(--danger); }
+
+  footer {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 1.2rem;
+    margin-top: .6rem;
+    font-family: var(--mono);
+    font-size: .72rem;
+    color: var(--ink-soft);
+  }
+  footer .block { text-align: center; flex: 1 1 180px; }
+  footer .line {
+    border-top: 1px solid var(--ink);
+    padding-top: .35rem;
+    margin-top: 1.4rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink);
+  }
+
+  @media print {
+    .wall { background: #fff; padding: 0; }
+    .cert { box-shadow: none; animation: none; }
+    :root { --wall: #fff; }
+  }
+</style>
+
+<div class="wall">
+  <article class="cert" role="img"
+    aria-label="Certificat d'honneur In Memoriam pour deux adaptateurs USB-série FT232 tombés lors de l'exploration du port DIN d'une machine à écrire Xerox 575.">
+    <div class="frame">
+      <span class="corner tl">✦</span>
+      <span class="corner tr">✦</span>
+      <span class="corner bl">✦</span>
+      <span class="corner br">✦</span>
+
+      <p class="eyebrow">Décoration posthume &middot; Atelier</p>
+      <h1>Morts pour la Science</h1>
+      <p class="sub">Certificat d'honneur décerné à titre posthume</p>
+
+      <div class="divider"></div>
+
+      <svg class="seal" viewBox="0 0 200 224" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <path id="arc" d="M 100 96 m -60 0 a 60 60 0 1 1 120 0 a 60 60 0 1 1 -120 0" />
+        </defs>
+        <!-- ribbon tails -->
+        <path d="M74 150 L74 214 L92 198 L100 214 L100 150 Z" fill="#8E2C18"/>
+        <path d="M126 150 L126 214 L108 198 L100 214 L100 150 Z" fill="#7A2413"/>
+        <!-- medal body -->
+        <circle cx="100" cy="96" r="72" fill="#C6A02A"/>
+        <circle cx="100" cy="96" r="72" fill="none" stroke="#7A5A10" stroke-width="1.5"/>
+        <circle cx="100" cy="96" r="62" fill="#F1E6C6"/>
+        <circle cx="100" cy="96" r="62" fill="none" stroke="#9C7618" stroke-width="1.5"/>
+        <circle cx="100" cy="96" r="52" fill="none" stroke="#9C7618" stroke-width=".75" stroke-dasharray="1 4" stroke-linecap="round"/>
+        <!-- circular motto -->
+        <text font-family="'SF Mono','Courier New',monospace" font-size="9.5" letter-spacing="2.4"
+              fill="#5C4A30" font-weight="700">
+          <textPath href="#arc" startOffset="25%" text-anchor="middle">★ MORT POUR LA SCIENCE ★</textPath>
+        </text>
+        <!-- IC chip emblem -->
+        <g>
+          <rect x="84" y="80" width="32" height="30" rx="2.5" fill="#2E2314"/>
+          <circle cx="90" cy="86" r="2" fill="#C6A02A"/>
+          <g fill="#9C7618">
+            <rect x="78" y="84" width="6" height="3"/><rect x="78" y="91" width="6" height="3"/>
+            <rect x="78" y="98" width="6" height="3"/><rect x="78" y="105" width="6" height="3"/>
+            <rect x="116" y="84" width="6" height="3"/><rect x="116" y="91" width="6" height="3"/>
+            <rect x="116" y="98" width="6" height="3"/><rect x="116" y="105" width="6" height="3"/>
+          </g>
+          <!-- fatal arc -->
+          <path d="M104 74 L95 96 L102 96 L96 118 L114 90 L106 90 L112 74 Z" fill="#8E2C18" stroke="#F1E6C6" stroke-width=".6"/>
+        </g>
+        <text x="100" y="150" text-anchor="middle" font-family="'SF Mono','Courier New',monospace"
+              font-size="8" letter-spacing="3" fill="#9C7618" font-weight="700">MMXXVI</text>
+      </svg>
+
+      <p class="present">L'Atelier décerne la présente citation à</p>
+
+      <div class="honorees">
+        <div class="name"><span class="rank">Éclaireur</span>FT232 «&nbsp;Premier&nbsp;»</div>
+        <div class="amp">&amp;</div>
+        <div class="name"><span class="rank">Éclaireur</span>FT232 «&nbsp;Second&nbsp;»</div>
+      </div>
+      <p class="unit">1<sup>re</sup> Compagnie des Adaptateurs USB&ndash;Série</p>
+
+      <p class="citation">
+        Tombés en service commandé lors de la reconnaissance du port DIN&nbsp;8
+        d'une machine à écrire <strong>Xerox&nbsp;575</strong>. Le premier fauché par la
+        broche&nbsp;B <span class="hot">(+12&nbsp;V)</span>, le second par l'arc de la
+        broche&nbsp;E <span class="hot">(+42&nbsp;V)</span>. Par leur sacrifice, ils ont
+        révélé les rails de puissance et épargné à leurs frères d'armes les 42&nbsp;volts.
+      </p>
+
+      <blockquote class="epitaph">
+        « Partis explorer un port inconnu sans carte ni bouclier, ils ont ouvert la voie.
+        Que nul câble volant ne rejoigne jamais la broche&nbsp;B, et que le multimètre
+        commence toujours au calibre le plus haut. »
+        <span class="sig">— TX &rarr; GND &middot; repose en court-circuit 🪦</span>
+      </blockquote>
+
+      <table class="registre">
+        <caption>Registre des pertes</caption>
+        <thead>
+          <tr><th>Matricule</th><th>Poste tenu</th><th>Cause de la perte</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>FT232 «&nbsp;Premier&nbsp;»</td>
+            <td>RX &larr; broche&nbsp;C</td>
+            <td class="kill">Contact fugace &middot; broche&nbsp;B, +12&nbsp;V</td>
+          </tr>
+          <tr>
+            <td>FT232 «&nbsp;Second&nbsp;»</td>
+            <td>Reconnaissance broche&nbsp;E</td>
+            <td class="kill">Arc électrique &middot; broche&nbsp;E, +42&nbsp;V</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <footer>
+        <div class="block">
+          <div class="line">Fait à l'établi</div>
+          Juillet 2026
+        </div>
+        <div class="block">
+          <div class="line">Le Chef d'Atelier</div>
+          Pour la Science et le Rétro
+        </div>
+      </footer>
+    </div>
+  </article>
+</div>
