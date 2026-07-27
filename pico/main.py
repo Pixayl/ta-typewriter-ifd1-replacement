@@ -249,10 +249,78 @@ def ensure_ready(verbose=True):
     return start()
 
 # ------------------------------------------------------------------ impression
-def strike(idx):
+def strike(idx, advance=True, force=None):
+    """Frappe le rayon `idx` de la marguerite.
+
+    L'octet de force porte deux drapeaux (voir docs/protocole-ifd1.md) :
+      bit 7 = 1 -> le chariot avance d'un pas apres la frappe
+      bit 7 = 0 -> AVANCE SUPPRIMEE : la frappe suivante se superpose
+      bit 6     = sens de cette avance (0 = droite)
+    advance=False est donc la SURIMPRESSION, d'ou decoulent le gras, le
+    souligne et les accents composes."""
     global col
-    send_pair(idx, 0x80 | (FORCE & 0x3F))
+    f = FORCE if force is None else force
+    send_pair(idx, (0x80 if advance else 0x00) | (f & 0x3F))
+    if advance:
+        col += 1
+
+
+def _move(steps):
+    """Mouvement horizontal pur, en pas de 1/120".
+      steps > 0 -> espace vers la droite (0x83)
+      steps < 0 -> retour arriere (0x84)
+      steps = 0 -> avance d'exactement UN pas d'ecriture (0x83 0x00)
+    Ce sont des MOUVEMENTS : ils n'emettent pas d'accuse DTR, donc pas de
+    controle de flux — on les cadence a la main."""
+    if steps >= 0:
+        _tx([0x83, steps & 0xFF])
+    else:
+        _tx([0x84, (-steps) & 0xFF])
+    time.sleep_ms(60)
+
+
+# Accents composes : caractere -> (lettre de base, signe a surimprimer).
+# La marguerite FR porte deja e a u i o accentues graves/aigus ; ce qui manque,
+# ce sont les circonflexes et les tremas, qu'on reconstitue par surimpression.
+ACCENTS = {
+    'â': ('a', '^'), 'ê': ('e', '^'), 'î': ('i', '^'),
+    'ô': ('o', '^'), 'û': ('u', '^'),
+    'ä': ('a', '¨'), 'ë': ('e', '¨'), 'ï': ('i', '¨'),
+    'ö': ('o', '¨'), 'ü': ('u', '¨'), 'ÿ': ('y', '¨'),
+}
+
+
+def _emit_char(idx, bold=False, underline=False):
+    """Imprime UNE cellule de caractere, eventuellement grasse et/ou soulignee.
+    Se termine toujours par une avance d'exactement un pas d'ecriture.
+
+    Gras : deux frappes decalees de 1/120" — la methode de l'IFD1 d'origine.
+    Souligne : le trait bas surimprime, et c'est lui qui porte l'avance."""
+    global col
+    us = IDX_OF.get('_')
+    if not bold and not underline:
+        strike(idx, advance=True)
+        return
+    strike(idx, advance=False)                 # couche de base, sur place
+    if bold:
+        _move(1)
+        strike(idx, advance=False)             # 2e frappe, legerement decalee
+        _move(-1)                              # retour sur la position de base
+    if underline and us is not None:
+        strike(us, advance=True)               # le souligne porte l'avance
+    else:
+        _move(0)                               # sinon, avance d'un pas
     col += 1
+
+
+def _emit_accent(c, bold=False, underline=False):
+    """Compose un caractere accentue absent de la marguerite."""
+    base, mark = ACCENTS[c]
+    if base not in IDX_OF or mark not in IDX_OF:
+        return False
+    strike(IDX_OF[base], advance=False)
+    _emit_char(IDX_OF[mark], bold=bold, underline=underline)
+    return True
 
 USE_REAL_SPACE = False    # voir ci-dessous — a basculer a True pour tester
 
@@ -339,7 +407,8 @@ def _wrap(text, width):
             if not word:
                 continue
             cand = word if not line else line + ' ' + word
-            if len(cand) <= width:
+            # les etoiles de balisage ne s'impriment pas : hors du compte
+            if len(cand.replace('*', '')) <= width:
                 line = cand
             else:
                 if line:
@@ -351,22 +420,33 @@ def _wrap(text, width):
         out.append(line)
     return out
 
-def print_text(text, wrap=True, end_newline=True, check=True):
+def print_text(text, wrap=True, end_newline=True, check=True,
+               bold=False, underline=False, markup=True):
     """Imprime du texte. wrap=True : retour a la ligne automatique a LINE_LEN.
     end_newline=True : termine par un retour a la ligne.
-    check=True : verifie/rouvre la session avant d'imprimer (elle expire)."""
+    check=True : verifie/rouvre la session avant d'imprimer (elle expire).
+    bold / underline : style applique a tout le texte.
+    markup=True : *entoure d'etoiles* passe en gras pour ce fragment.
+
+    Les caracteres absents de la marguerite sont composes par surimpression
+    quand c'est possible (accents circonflexes et tremas), ignores sinon."""
     if check and not ensure_ready():
         print("impossible d'ouvrir la session — cycle secteur machine.")
         return
     lines = _wrap(text, LINE_LEN) if wrap else text.split('\n')
     last = len(lines) - 1
     for i, ln in enumerate(lines):
+        gras = bold
         for c in ln:
-            if c == ' ':
+            if markup and c == '*':
+                gras = not gras            # bascule, l'etoile ne s'imprime pas
+            elif c == ' ':
                 space()
             elif c in IDX_OF:
-                strike(IDX_OF[c])
-            # sinon : caractere absent de la roue -> ignore
+                _emit_char(IDX_OF[c], bold=gras, underline=underline)
+            elif c in ACCENTS:
+                _emit_accent(c, bold=gras, underline=underline)
+            # sinon : caractere absent de la roue et non composable -> ignore
         if i < last or end_newline:
             newline()
 
@@ -661,21 +741,24 @@ def run():
     l'executerait au demarrage, run() prendrait la main sur stdin et le REPL
     deviendrait inaccessible (vecu le 2026-07-27). Deployer sous ifd2.py.
 
-    Utilise l'ancien connect() (impulsion DSR) : c'est start() qui implemente
-    le vrai handshake (appui ON LINE cote machine)."""
-    print("IFD-2 : connexion a la machine...")
-    if not connect():
-        print("ECHEC 0x01 -> cycle secteur machine, puis reset Pico.")
+    Ouvre la session par le VRAI handshake : la machine appelle (0x01 quand on
+    presse ON LINE), on repond. Puis chaque ligne recue sur l'USB s'imprime.
+    C'est ce que pilote tools/serve.py (interface web)."""
+    print("IFD-2 : en attente de la machine.")
+    if not start():
+        print("ECHEC : session non ouverte.")
         return
-    print("connecte. Passage online...")
-    online()
-    print("PRET. Envoie du texte ligne par ligne (chaque ligne s'imprime).")
+    print("PRET. Chaque ligne recue s'imprime.")
     while True:
         line = sys.stdin.readline()
         if not line:
             continue
-        print_text(line.rstrip('\n'))
-        newline()
+        line = line.rstrip('\n')
+        if not line:
+            newline()          # ligne vide = saut de ligne
+            continue
+        print_text(line)
+        print("OK")            # accuse pour l'hote (serve.py l'attend)
 
 # PAS d'auto-execution : ce module se deploie en ifd2.py et s'utilise depuis le
 # REPL (ifd2.start(), ifd2.print_text(...)). Un `if __name__ == "__main__": run()`

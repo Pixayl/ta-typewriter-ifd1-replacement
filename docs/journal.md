@@ -238,3 +238,16 @@ Corollaire : `ping()` a une chance de fonctionner maintenant. Avant ce correctif
 ⚠️ Réserve résiduelle, assumée : les états 2-4 n'ont pas de contrôle positif, parce que `_listen_raw()` faisait un `_flush_in()` qui avalait l'écho de la commande. **Cause corrigée** : l'écho est désormais conservé par défaut (`flush=False`), il sert de contrôle positif intégré à chaque état. Si la question devait un jour se rouvrir, `kb_hunt()` rend maintenant un résultat interprétable d'emblée.
 
 **`probe_cmd` sur A5/A6/A7** : ce ne sont pas des commandes d'état et ce ne sont pas des non-opérations — elles **font bouger le chariot ou le rouleau**. La plage `A0`–`A4` des commandes d'état est donc bien close, et au-delà on retombe dans du mouvement mécanique. À éviter.
+
+## 2026-07-27 — ✍️ SURIMPRESSION + 💌 SERVEUR WEB « MOTS DOUX »
+
+**Surimpression implémentée** (elle découle du bit 7 de l'octet de force, cf. [`protocole-ifd1.md`](protocole-ifd1.md)) :
+- `strike(idx, advance=False)` = frappe sans avance → tout le reste en découle.
+- `_move(n)` : mouvement horizontal pur — `n>0` espace (`0x83`), `n<0` retour arrière (`0x84`), `n=0` avance d'un pas d'écriture (`0x83 0x00`).
+- **Gras** = deux frappes décalées de 1/120", exactement la méthode de l'IFD1 d'origine (`ESC W`). **Souligné** = trait bas surimprimé, et c'est lui qui porte l'avance. **Accents composés** : `â ê î ô û ä ë ï ö ü ÿ` reconstitués par lettre + `^`/`¨`, ce qui étend la marguerite FR sans matériel.
+- `print_text(..., bold=, underline=)` + balisage inline `*gras*`. Les étoiles ne s'impriment pas et sont hors du compte pour le retour à la ligne.
+
+**Serveur d'impression + interface web** : [`tools/serve.py`](../tools/serve.py) (bibliothèque standard + pyserial). Navigateur → serveur → USB → Pico → machine. Un seul fil parle au Pico (file d'attente) : la liaison est lente et séquentielle, deux messages entrelacés désynchroniseraient les paires d'octets. Le Pico répond `OK` par ligne imprimée, le serveur attend cet accusé avant la suivante (timeout large : la machine tape ~1 car/s). Journal des 20 derniers messages sur la page. Écoute sur `127.0.0.1` par défaut — pas d'authentification, `--host 0.0.0.0` seulement sur réseau de confiance.
+`run()` (Pico) est passé au **vrai handshake** (`start()`, appui ON LINE) au lieu de l'ancien `connect()` par impulsion DSR.
+
+Testé hors machine : page, POST, file, écriture ligne par ligne, accusé, journal, refus du message vide. **Reste à valider au banc** : le rendu du gras (le décalage de 1/120" est-il visible ?), du souligné, des accents composés, et le fait que `_move()` — commande de mouvement, donc sans accusé DTR — ne désynchronise pas le flux au milieu d'une ligne. C'est le point de risque : si ça déraille, le repli est `bold=False` (le souligné, lui, n'utilise aucun mouvement).
