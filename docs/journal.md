@@ -233,6 +233,8 @@ Corollaire : `ping()` a une chance de fonctionner maintenant. Avant ce correctif
 
 **Aucun état ne transmet les frappes.** L'hypothèse d'un mode saisie caché tombe : le verrouillage du clavier n'est pas propre à ONLINE, il est total. Combiné au manuel et au test `listen()`, le dossier terminal est clos pour de bon.
 
-⚠️ **Réserve de méthode, à lever** : `_listen_raw()` fait un `_flush_in()` après l'envoi de la commande, donc il **jette l'écho**. Les états 2-4 auraient dû renvoyer au moins l'écho de `A1`/`A4`/`A3` — le 0 octet est donc pour l'instant indiscernable d'une voie de réception sourde. Le zéro concorde avec tout le reste, mais **le contrôle positif manque** : refaire l'état 1 en pressant ON LINE au lieu de taper des lettres, et vérifier que `01` arrive. (Règle maison : vérifier le stimulus avant d'interpréter un négatif.)
+**Contrôle positif : fait, et concluant.** Même état 1 (OFFLINE au repos), même code, ON LINE pressée au lieu de taper des lettres → `t = 1280 ms, 0x01`. La voie de réception était donc bien vivante pendant que les lettres ne donnaient rien : **le négatif sur OFFLINE est réel**, et c'était le candidat le plus sérieux — l'état où le clavier fait son métier.
+
+⚠️ Réserve résiduelle, assumée : les états 2-4 n'ont pas de contrôle positif, parce que `_listen_raw()` faisait un `_flush_in()` qui avalait l'écho de la commande. **Cause corrigée** : l'écho est désormais conservé par défaut (`flush=False`), il sert de contrôle positif intégré à chaque état. Si la question devait un jour se rouvrir, `kb_hunt()` rend maintenant un résultat interprétable d'emblée.
 
 **`probe_cmd` sur A5/A6/A7** : ce ne sont pas des commandes d'état et ce ne sont pas des non-opérations — elles **font bouger le chariot ou le rouleau**. La plage `A0`–`A4` des commandes d'état est donc bien close, et au-delà on retombe dans du mouvement mécanique. À éviter.

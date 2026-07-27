@@ -398,12 +398,18 @@ def listen(seconds=20):
 # jamais visites — le test negatif du journal portait sur ONLINE, ou le
 # verrouillage du clavier est documente et donc attendu.
 
-def _listen_raw(seconds, label):
-    """Ecoute la ligne et horodate tout octet recu."""
+def _listen_raw(seconds, label, flush=False, hint="TAPE PLUSIEURS TOUCHES "
+                "(aeiou, chiffres, Return)"):
+    """Ecoute la ligne et horodate tout octet recu.
+
+    flush=False (defaut) : on GARDE l'echo de la commande qui vient d'etre
+    envoyee. C'est le controle positif de l'etat — s'il n'arrive rien du tout,
+    y compris pas d'echo, c'est l'oreille qui est sourde, pas le clavier qui
+    est muet. Le vider (flush=True) rend tout negatif ininterpretable."""
     print("--- %s" % label)
-    print("    TAPE PLUSIEURS TOUCHES (aeiou, chiffres, Return) pendant %d s..."
-          % seconds)
-    _flush_in()
+    print("    %s pendant %d s..." % (hint, seconds))
+    if flush:
+        _flush_in()
     t0 = time.ticks_ms()
     got = []
     while time.ticks_diff(time.ticks_ms(), t0) < seconds * 1000:
