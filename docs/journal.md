@@ -260,3 +260,16 @@ Premier essai du serveur : `ECHEC : could not open port /dev/tty.usbmodem1101`. 
 
 **Remède** : `pico/server_boot.py` (trois lignes : `import ifd2 ; ifd2.run()`) à déployer sous le nom `main.py` pour le mode serveur. Le Pico démarre seul, attend ON LINE, et `serve.py` est le seul à parler au port. Retour au mode mise au point : `mpremote fs rm :main.py`.
 `serve.py` détecte maintenant le port tout seul (`--port` facultatif) et, s'il ne trouve rien, rappelle les trois causes possibles dont l'exclusivité du port.
+
+## 2026-07-27 — 🍓 SERVEUR D'IMPRESSION : préparation du Pi Zero W
+
+Objectif #4 du projet. Chaîne : navigateur → Pi Zero W → USB → Pico → Xerox. Le Pi ne fait que le réseau et la page ; **le temps réel reste au Pico** (accusé DTR de ~1 ms, hors de portée d'un Linux ordinaire — c'est toute la leçon de ce journal).
+
+Livré : **[`docs/serveur-pi.md`](serveur-pi.md)** (installation sans écran, pas à pas), **`deploy/ifd2-web.service`** (service systemd, redémarrage automatique, `dialout` pour le port série, durcissement `ProtectSystem=strict`) et **`deploy/install-pi.sh`** (idempotent : installe `python3-serial` par apt — Bookworm refuse `pip install` à l'échelle du système via PEP 668 —, ajoute au groupe `dialout`, installe et démarre le service).
+
+Trois pièges anticipés, qui sont les causes de panne classiques :
+- **Un adaptateur micro-USB OTG → USB-A est indispensable** pour brancher le Pico : le Zero W n'a que deux prises micro-USB. C'est ce qui manque le plus souvent.
+- **Le port du milieu (`USB`) porte les données**, celui du bord (`PWR`) seulement l'alimentation.
+- **Le Wi-Fi du Zero W est 2,4 GHz uniquement**, et le code pays doit être renseigné sinon la radio reste éteinte.
+
+Rappel de sécurité consigné dans le doc : le service écoute sur tout le réseau local **sans authentification** — acceptable chez soi, à ne jamais exposer sur Internet.

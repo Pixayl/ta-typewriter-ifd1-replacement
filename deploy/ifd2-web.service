@@ -1,0 +1,30 @@
+[Unit]
+Description=IFD-2 — interface web "mots doux" pour la Xerox 575
+Documentation=https://github.com/Pixayl/ta-typewriter-ifd1-replacement
+# Le Pico apparait comme /dev/ttyACM0 : on attend qu'il soit la plutot que de
+# demarrer dans le vide (le service redemarre de toute facon si le lien tombe).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+# dialout : indispensable pour ouvrir /dev/ttyACM0 sans etre root.
+SupplementaryGroups=dialout
+WorkingDirectory=__REPO__
+ExecStart=/usr/bin/python3 __REPO__/tools/serve.py --host 0.0.0.0
+Restart=always
+RestartSec=5
+# Journalisation via journalctl : journalctl -u ifd2-web -f
+StandardOutput=journal
+StandardError=journal
+
+# Durcissement raisonnable : le service n'a besoin que du port serie.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/dev
+
+[Install]
+WantedBy=multi-user.target
