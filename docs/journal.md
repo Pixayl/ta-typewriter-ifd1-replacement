@@ -173,3 +173,18 @@ onl_tab:  $A1, $A4, $A2, 0
 Puis : `82 1F` (reset position — on utilisait `0F`), puis `80 <pas>`.
 
 Firmware corrigé en conséquence (`online()`), en attente de test.
+
+## 2026-07-27 — ✅ SÉQUENCE D'INIT VALIDÉE AU BANC (premier coup, sans retry)
+
+Test du firmware corrigé (`import ifd2` puis `ifd2.start()`, appui ON LINE dans la fenêtre de 60 s) :
+```
+>>> PRESSE maintenant la touche ON LINE de la machine <<<
+demande recue (0x01) — init dans 1200 ms...
+online confirme (echo : a1 a2)
+PRET (LED ON LINE allumee).
+True
+```
+**La séquence `A1 A4 A2 00` (sans `A0`) fonctionne, du premier essai, sans aucune tentative de reprise** — alors que l'ancienne (`A0 00 A1 00 A4 00 A2 00`) ne passait qu'une fois sur trois et nécessitait les 4 retries. Le `A0` en tête était bien le coupable.
+**Écho observé = `a1 a2`** : la machine réfléchit `A1` et `A2` (transitions d'état) mais **pas `A4`** — cohérent, `A4` (ENQ) appelle un bloc de statut, pas un écho, et rien d'autre n'est arrivé dans la fenêtre de lecture de 400 ms.
+Autres points confirmés par ce test : `delay_ms=1200` entre le `0x01` et l'init convient (pas besoin de recalibrer), et `0x82 0x1F` (valeur du pilote ST, à la place du `0x0F` qu'on utilisait) n'a pas posé de problème de calage chariot.
+**Ce que ça ferme** : le handshake est désormais déterministe. Reste à revérifier, sur cette base propre, ce qui avait été mesuré au-dessus de l'ancienne init bancale — en premier lieu une impression multi-lignes complète (`print_text`), puis la tenue de la session dans la durée (`ensure_ready`/`ping`).
