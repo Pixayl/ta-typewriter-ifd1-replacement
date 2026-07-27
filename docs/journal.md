@@ -219,3 +219,20 @@ Corollaire : `ping()` a une chance de fonctionner maintenant. Avant ce correctif
 **Piège de banc, à ne pas reproduire** : le fichier a été déployé en `main.py` sur le Pico au lieu de `ifd2.py`. MicroPython exécute `main.py` au démarrage → `run()` s'est lancé seul, a confisqué `stdin` puis s'est bloqué 60 s dans `start()` → **REPL inaccessible**. Récupération : Ctrl-C puis `mpremote fs rm :main.py`. L'auto-exécution (`if __name__ == "__main__"`) a été **retirée du firmware** et l'avertissement mis en tête de fichier.
 
 **Correction épistémique** : le `em_int` cité plus haut est le code **côté hôte** (pilote Atari ST), pas côté machine — `lesen` y lit ce que la machine envoie. Il montre donc ce que l'auteur *s'attendait* à recevoir, pas ce que la machine *peut* émettre : c'est une corroboration du dossier « terminal impossible », pas une preuve. La preuve reste le test `listen()` sur lien fiable + le manuel. À noter d'ailleurs : la branche `ni_line` (ni `01` ni `02`) **répond deux octets nuls** au lieu d'ignorer — l'auteur savait que d'autres octets arrivent.
+
+## 2026-07-27 — ⌨️ CLAVIER : les 4 états sont muets (dossier re-fermé)
+
+`kb_hunt()` a passé en revue les états jamais explorés, 20 s de frappe clavier dans chacun :
+
+| État | Octets reçus |
+|---|---|
+| 1. OFFLINE au repos (DSR asserté) | 0 |
+| 2. après START `A1 00` seul (« passage préparé ») | 0 |
+| 3. après ENQ `A4 00` | 0 |
+| 4. ONLINE puis ETX `A3 00` (transmission interrompue) | 0 |
+
+**Aucun état ne transmet les frappes.** L'hypothèse d'un mode saisie caché tombe : le verrouillage du clavier n'est pas propre à ONLINE, il est total. Combiné au manuel et au test `listen()`, le dossier terminal est clos pour de bon.
+
+⚠️ **Réserve de méthode, à lever** : `_listen_raw()` fait un `_flush_in()` après l'envoi de la commande, donc il **jette l'écho**. Les états 2-4 auraient dû renvoyer au moins l'écho de `A1`/`A4`/`A3` — le 0 octet est donc pour l'instant indiscernable d'une voie de réception sourde. Le zéro concorde avec tout le reste, mais **le contrôle positif manque** : refaire l'état 1 en pressant ON LINE au lieu de taper des lettres, et vérifier que `01` arrive. (Règle maison : vérifier le stimulus avant d'interpréter un négatif.)
+
+**`probe_cmd` sur A5/A6/A7** : ce ne sont pas des commandes d'état et ce ne sont pas des non-opérations — elles **font bouger le chariot ou le rouleau**. La plage `A0`–`A4` des commandes d'état est donc bien close, et au-delà on retombe dans du mouvement mécanique. À éviter.
