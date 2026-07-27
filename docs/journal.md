@@ -188,3 +188,19 @@ True
 **Écho observé = `a1 a2`** : la machine réfléchit `A1` et `A2` (transitions d'état) mais **pas `A4`** — cohérent, `A4` (ENQ) appelle un bloc de statut, pas un écho, et rien d'autre n'est arrivé dans la fenêtre de lecture de 400 ms.
 Autres points confirmés par ce test : `delay_ms=1200` entre le `0x01` et l'init convient (pas besoin de recalibrer), et `0x82 0x1F` (valeur du pilote ST, à la place du `0x0F` qu'on utilisait) n'a pas posé de problème de calage chariot.
 **Ce que ça ferme** : le handshake est désormais déterministe. Reste à revérifier, sur cette base propre, ce qui avait été mesuré au-dessus de l'ancienne init bancale — en premier lieu une impression multi-lignes complète (`print_text`), puis la tenue de la session dans la durée (`ensure_ready`/`ping`).
+**Suite immédiate : `print_text` avec wrap validé sur cette base — mise en page correcte.** La couche impression n'était donc pas contaminée par l'ancienne init.
+
+## 2026-07-27 — 📖 SPEC PRIMAIRE RETROUVÉE : les articles ST Computer en entier
+
+Les deux articles *ST Computer* (07 et 08/1988) sont archivés en ligne, et la partie 2 publie **le listing assembleur complet de l'émulateur IFD1**, tables comprises. Récupérés, décodés, consignés dans **[`docs/protocole-ifd1.md`](protocole-ifd1.md)** — désormais la référence normative du projet. (Le dépôt tweetwronger, lui, ne contient pas la table : son README ne fait que pointer vers ces articles.)
+
+Ce que ça change par rapport à ce qu'on avait deviné :
+- **Les codes empiriques sont confirmés un par un** : `80 <n>` pas d'écriture, `82 <drapeaux>` mise en position (bit1 chariot, bit2 marguerite, bit3 ruban → `03` = chariot seul, `0F` = tout, `01` = aucun moteur, ce qui explique le blocage constaté), `84 <n>` retour arrière. Notre `D0 10` d'interligne vaut 16/96" = **exactement 1/6"**, l'interligne normalisé : on était tombé juste.
+- **Mouvement direct = distance sur 12 bits**, pas un octet : `((b1 & 0x0F) << 8) | b2`, base `C0` droite / `E0` gauche / `D0` bas / `F0` haut. Le `F0 14` noté « avance d'une ligne » est en fait un mouvement **vers le haut** — à revérifier.
+- **`82 1F` n'est pas documenté** (bit 4 sans signification) ; la valeur juste est `82 0F`. Ça a marché une fois, ce n'est pas une raison.
+- 🆕 **`83 <n>` = espace, et `83 00` avance d'exactement un pas d'écriture.** Notre `space()` fait une frappe à blanc (`0x01, 0x80`) qui fait tourner la marguerite pour rien → à remplacer.
+- 🆕 **L'octet de force porte deux drapeaux** : bit 6 = sens de l'avance (1 = vers la gauche, impression inversée), **bit 7 = 0 supprime l'avance qui suit**. La surimpression est donc gratuite → accents composés, **gras** (double frappe décalée de 1/120") et **soulignement** sont à notre portée sans rien ajouter au protocole.
+- 🆕 **La force varie par caractère dans la table d'origine : 12 à 25.** Notre `FORCE = 40` est très au-dessus de toute la plage — piste pour le bruit, l'usure du ruban et le marquage.
+- 🆕 L'auteur documente le plantage qu'on a vécu : des octets incompris ne sont « pas toujours ignorés », la machine plante parfois et **seul un cycle secteur la récupère**. Notre « sapin de Noël » a un nom.
+
+**Contradiction à trancher au banc** : le texte de l'article donne l'init en paires *avec* `A0` (`A0 00, A1 00, A4 00, A2 00`), alors que le listing du même auteur envoie `onl_tab: A1, A4, A2, 0` en 4 octets simples — la forme qui marche chez nous. Comme tout le reste du protocole est strictement en paires, l'hypothèse propre est `A1 00, A4 00, A2 00` (sans `A0`) : elle réconcilie les deux lectures et ferait réellement arriver l'ENQ, que notre forme actuelle avale en paramètre de `A1`. Ce qui expliquerait aussi pourquoi `ping()` n'a jamais rien renvoyé.
