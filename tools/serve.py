@@ -43,6 +43,17 @@ except ImportError:
 MAX_LEN = 500          # garde-fou : la machine tape ~1 caractere/seconde
 
 
+def trouver_port():
+    """Cherche le Pico sur le bus. Sur Mac les ports sont /dev/cu.usbmodemXXXX
+    (numero variable selon la prise !), sur Linux /dev/ttyACM0."""
+    import glob
+    for motif in ("/dev/cu.usbmodem*", "/dev/ttyACM*", "/dev/cu.usbserial*"):
+        trouves = sorted(glob.glob(motif))
+        if trouves:
+            return trouves[0]
+    return None
+
+
 # --------------------------------------------------------------- file d'attente
 class Printer(threading.Thread):
     """Un seul fil parle au Pico : la liaison est sequentielle et lente, et deux
@@ -192,12 +203,25 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--port", required=True, help="port serie du Pico")
+    ap.add_argument("--port", help="port serie du Pico (detecte tout seul "
+                                   "si omis)")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--host", default="127.0.0.1",
                     help="127.0.0.1 (defaut) ou 0.0.0.0 pour le reseau local")
     ap.add_argument("--http-port", type=int, default=8575)
     a = ap.parse_args()
+
+    if not a.port:
+        a.port = trouver_port()
+        if not a.port:
+            raise SystemExit(
+                "Aucun Pico trouve sur le bus USB.\n"
+                "  - est-il branche ? (verifier le cable, essayer une autre prise)\n"
+                "  - `mpremote devs` doit le lister\n"
+                "  - et surtout : AUCUN autre programme ne doit tenir le port.\n"
+                "    mpremote le garde en exclusivite — quitter toute session\n"
+                "    `mpremote repl` ou `mpremote exec` avant de lancer serve.py.")
+        print("Pico detecte sur %s" % a.port)
 
     Handler.printer = Printer(a.port, a.baud)
     Handler.printer.start()

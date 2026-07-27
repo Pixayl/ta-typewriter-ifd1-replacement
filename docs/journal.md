@@ -251,3 +251,12 @@ Corollaire : `ping()` a une chance de fonctionner maintenant. Avant ce correctif
 `run()` (Pico) est passé au **vrai handshake** (`start()`, appui ON LINE) au lieu de l'ancien `connect()` par impulsion DSR.
 
 Testé hors machine : page, POST, file, écriture ligne par ligne, accusé, journal, refus du message vide. **Reste à valider au banc** : le rendu du gras (le décalage de 1/120" est-il visible ?), du souligné, des accents composés, et le fait que `_move()` — commande de mouvement, donc sans accusé DTR — ne désynchronise pas le flux au milieu d'une ligne. C'est le point de risque : si ça déraille, le repli est `bold=False` (le souligné, lui, n'utilise aucun mouvement).
+
+### Rectificatif de montage : mpremote et serve.py ne peuvent pas cohabiter
+
+Premier essai du serveur : `ECHEC : could not open port /dev/tty.usbmodem1101`. Deux causes distinctes, à ne pas confondre :
+1. **Le Pico n'était pas sur le bus** (ni port série, ni volume `RPI-RP2`, `mpremote devs` muet) → câble/prise. Sur Mac, préférer `/dev/cu.*` à `/dev/tty.*`, et le numéro change selon la prise utilisée.
+2. **Erreur de conception** : lancer `run()` par `mpremote exec` fait tenir le port **en exclusivité** par mpremote — `serve.py` ne peut alors jamais l'ouvrir. Les deux commandes s'excluaient.
+
+**Remède** : `pico/server_boot.py` (trois lignes : `import ifd2 ; ifd2.run()`) à déployer sous le nom `main.py` pour le mode serveur. Le Pico démarre seul, attend ON LINE, et `serve.py` est le seul à parler au port. Retour au mode mise au point : `mpremote fs rm :main.py`.
+`serve.py` détecte maintenant le port tout seul (`--port` facultatif) et, s'il ne trouve rien, rappelle les trois causes possibles dont l'exclusivité du port.
