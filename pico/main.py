@@ -756,11 +756,41 @@ def run():
     (l'ENQ ne repond pas hors init), il declencherait un start() qui attend
     60 s un appui sur ON LINE au lieu d'imprimer. La session est ouverte UNE
     fois, ici, et print_text est appele avec check=False."""
-    print("# IFD-2 : ouverture de la session (presser ON LINE)")
-    if not start():
-        print("ERR session non ouverte")
-        return
-    print("# PRET")
+    print("# IFD-2 : serveur d'impression")
+    while True:
+        # Boucle SANS FIN : l'appui sur ON LINE peut arriver a n'importe quel
+        # moment, des heures apres le demarrage. Une tentative unique de 60 s
+        # obligeait a redemarrer le Pico pour reessayer.
+        if not start(timeout_s=30):
+            print("# pas de session — j'attends encore (presser ON LINE)")
+            continue
+        print("# PRET")
+        _vider_stdin()      # jeter les messages arrives avant l'ouverture
+        _boucle_impression()
+
+
+def _vider_stdin():
+    """Jette ce qui attend sur l'USB avant l'ouverture de la session.
+
+    Sinon un message envoye pendant que la machine etait hors ligne — deja
+    declare en echec par l'hote — s'imprimerait tout seul a la connexion.
+    C'est exactement la surprise qu'on a eue avec l'invite tapee sur le papier."""
+    try:
+        import select
+        p = select.poll()
+        p.register(sys.stdin, select.POLLIN)
+        n = 0
+        while p.poll(0):
+            sys.stdin.readline()
+            n += 1
+        if n:
+            print("# %d message(s) perime(s) ignore(s)" % n)
+    except Exception:
+        pass            # pas de select : on continue sans vider
+
+
+def _boucle_impression():
+    """Imprime chaque ligne recue. Ne rend la main que si la session est perdue."""
     while True:
         line = sys.stdin.readline()
         if not line:

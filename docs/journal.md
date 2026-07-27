@@ -297,3 +297,12 @@ Deux fautes de conception, la même racine : **la prose et le protocole partagea
 - `serve.py` distingue les trois cas, remonte le bavardage à la page (utile : « presser ON LINE » s'affiche maintenant dans l'interface), vide le tampon d'entrée avant chaque envoi, et calcule le timeout selon la longueur (60 s + 3 s/caractère — la machine tape ~1 car/s, un timeout fixe déclarait en échec un long message qui s'imprimait très bien).
 
 Leçon générale, à retenir pour la suite : **une liaison qui porte un protocole ne doit pas porter de prose.** Sans marqueur, l'hôte prend une phrase d'état pour un accusé — ou la fait taper sur le papier.
+
+### Fiabilité de l'appareil : attente infinie de ON LINE, et démarrage rapide
+
+Deux défauts constatés après remise en service sur le Pi.
+
+1. **Serveur web très long à apparaître.** `Wants=network-online.target` dans l'unité systemd : sur un Pi en Wi-Fi, cette cible met couramment une à deux minutes. Or le serveur écoute sur `0.0.0.0` et n'a pas besoin du réseau monté pour se lier. Dépendance retirée (`After=network.target` seul).
+2. **Connexion machine « réussie une fois sur N ».** `run()` n'appelait `start()` **qu'une fois**, avec 60 s d'attente : passé ce délai il rendait la main, le Pico retombait au REPL, plus de session et plus aucune tentative. Il fallait donc presser ON LINE dans la bonne fenêtre après le démarrage du Pico — et, pire, `serve.py` écrivait ensuite ses messages dans le REPL. Corrigé : **boucle sans fin**, `start(timeout_s=30)` réessayé indéfiniment, l'appui sur ON LINE peut arriver des heures plus tard.
+
+Ajout au passage : `_vider_stdin()` jette les messages arrivés avant l'ouverture de la session. Sans ça, un message envoyé machine hors ligne — déjà déclaré en échec côté hôte — s'imprimait tout seul à la connexion. C'est la même surprise que l'invite tapée sur le papier, sous une autre forme.

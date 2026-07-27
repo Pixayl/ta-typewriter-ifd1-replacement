@@ -1,10 +1,11 @@
 [Unit]
 Description=IFD-2 — interface web "mots doux" pour la Xerox 575
 Documentation=https://github.com/Pixayl/ta-typewriter-ifd1-replacement
-# Le Pico apparait comme /dev/ttyACM0 : on attend qu'il soit la plutot que de
-# demarrer dans le vide (le service redemarre de toute facon si le lien tombe).
-After=network-online.target
-Wants=network-online.target
+# PAS de network-online.target : sur un Pi en Wi-Fi cette cible peut mettre une
+# a deux minutes a etre atteinte, et le serveur n'en a pas besoin — il ecoute sur
+# 0.0.0.0, ce qui fonctionne avant meme que le reseau soit monte. L'attendre ne
+# faisait que retarder l'apparition de la page de plusieurs dizaines de secondes.
+After=network.target
 
 [Service]
 Type=simple
