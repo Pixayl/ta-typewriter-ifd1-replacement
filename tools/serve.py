@@ -113,11 +113,15 @@ class Printer(threading.Thread):
                     if not self._ouvrir():
                         raise IOError("aucun Pico detecte")
                     for line in text.split('\n'):
+                        # vider ce qui traine : un vieux bavardage du Pico lu
+                        # comme accuse ferait croire a une impression finie.
+                        self.ser.reset_input_buffer()
                         self.ser.write((line + '\n').encode('utf-8', 'replace'))
                         self.ser.flush()
                         # le Pico repond "OK" quand la ligne est sur le papier
-                        self._wait_ok()
+                        self._wait_ok(line)
                     self._note(text, "imprime")
+                    self.etat = "imprimante prete (%s)" % self.port
                     break
                 except Exception as e:                  # lien coupe, Pico absent
                     self._fermer()
@@ -135,16 +139,32 @@ class Printer(threading.Thread):
             pass
         self.ser = None
 
-    def _wait_ok(self, timeout=180):
-        """Attend l'accuse du Pico. La machine tape lentement : large timeout."""
+    def _wait_ok(self, ligne=""):
+        """Attend l'accuse du Pico.
+
+        Protocole (voir ifd2.run()) : "OK" = imprime, "ERR ..." = echec,
+        "# ..." = bavardage humain, qu'on remonte a la page sans le confondre
+        avec un accuse. Toute autre ligne est traitee comme du bavardage.
+
+        Le delai est proportionnel a la longueur : la machine tape environ un
+        caractere par seconde, donc un timeout fixe declarerait en echec un
+        long message en train de s'imprimer tres correctement."""
+        timeout = 60 + 3 * len(ligne)
         t0 = time.time()
         while time.time() - t0 < timeout:
-            line = self.ser.readline()
-            if not line:
+            brute = self.ser.readline()
+            if not brute:
                 continue
-            if line.strip() == b'OK':
+            msg = brute.decode("utf-8", "replace").strip()
+            if msg == "OK":
                 return True
-        return False
+            if msg.startswith("ERR"):
+                raise IOError(msg[3:].strip() or "erreur signalee par le Pico")
+            if msg:
+                # avancement : utile surtout pour "presser ON LINE"
+                self.etat = "Pico : %s" % msg.lstrip("# ").strip()
+        raise IOError("pas d'accuse du Pico apres %d s "
+                      "(session ouverte ? LED ON LINE allumee ?)" % timeout)
 
     def _note(self, text, etat):
         self.log.insert(0, {"quand": time.strftime("%H:%M:%S"),

@@ -186,19 +186,19 @@ def online(retries=4, flow=False, pairs=True):
         time.sleep_ms(400)
         echo = uart.read() or b''
         if 0xA2 in echo:
-            print("online confirme (echo : %s)" % echo.hex(' '))
+            print("# online confirme (echo : %s)" % echo.hex(' '))
             time.sleep_ms(500)
             _tx([0x82, 0x1F])            # reset position (valeur du pilote ST)
             time.sleep_ms(2000)          # calage chariot
             _tx([0x80, PITCH])           # pas d'ecriture
             time.sleep_ms(300)
             return True
-        print("  tentative %d (%s) : pas d'echo A2 (recu : %s)"
+        print("#  tentative %d (%s) : pas d'echo A2 (recu : %s)"
               % (attempt, "paires" if pairs else "octets bruts",
                  echo.hex(' ') if echo else 'rien'))
         time.sleep_ms(300)
     if pairs:
-        print("  -> repli sur la forme en octets bruts (A1 A4 A2 00)")
+        print("#  -> repli sur la forme en octets bruts (A1 A4 A2 00)")
         return online(retries, flow, pairs=False)
     return False
 
@@ -245,7 +245,7 @@ def ensure_ready(verbose=True):
     if r:
         return True
     if verbose:
-        print("session expiree -> reouverture...")
+        print("# session expiree -> reouverture...")
     return start()
 
 # ------------------------------------------------------------------ impression
@@ -431,7 +431,7 @@ def print_text(text, wrap=True, end_newline=True, check=True,
     Les caracteres absents de la marguerite sont composes par surimpression
     quand c'est possible (accents circonflexes et tremas), ignores sinon."""
     if check and not ensure_ready():
-        print("impossible d'ouvrir la session — cycle secteur machine.")
+        print("# impossible d'ouvrir la session — cycle secteur machine.")
         return
     lines = _wrap(text, LINE_LEN) if wrap else text.split('\n')
     last = len(lines) - 1
@@ -617,16 +617,16 @@ def start(timeout_s=60, delay_ms=1200, flow=False):
     """Ouvre la session. NECESSITE un appui sur la touche ON LINE de la machine.
     delay_ms : temps d'attente entre le 0x01 et l'init — A CALIBRER (essayer
     0, 100, 300, 600, 1200 : l'ancienne mesure reposait sur un faux declencheur)."""
-    print(">>> PRESSE maintenant la touche ON LINE de la machine <<<")
+    print("# >>> PRESSE maintenant la touche ON LINE de la machine <<<")
     if not wait_online_request(timeout_s):
-        print("ECHEC : pas de demande (0x01) recue. La machine est-elle allumee ?")
+        print("# ECHEC : pas de demande (0x01) recue. La machine est-elle allumee ?")
         return False
-    print("demande recue (0x01) — init dans %d ms..." % delay_ms)
+    print("# demande recue (0x01) — init dans %d ms..." % delay_ms)
     time.sleep_ms(delay_ms)
     if not online(retries=3, flow=flow):
-        print("ECHEC : init non confirmee. Represse ON LINE et relance start().")
+        print("# ECHEC : init non confirmee. Represse ON LINE et relance start().")
         return False
-    print("PRET (LED ON LINE allumee).")
+    print("# PRET (LED ON LINE allumee).")
     return True
 
 
@@ -743,22 +743,38 @@ def run():
 
     Ouvre la session par le VRAI handshake : la machine appelle (0x01 quand on
     presse ON LINE), on repond. Puis chaque ligne recue sur l'USB s'imprime.
-    C'est ce que pilote tools/serve.py (interface web)."""
-    print("IFD-2 : en attente de la machine.")
+    C'est ce que pilote tools/serve.py (interface web).
+
+    PROTOCOLE AVEC L'HOTE, sur cette meme liaison USB :
+      "OK"        -> ligne imprimee
+      "ERR <...>" -> echec sur cette ligne
+      "# <...>"   -> bavardage humain (avancement, invites), a afficher
+    Tout le reste doit etre prefixe "# " : sans quoi l'hote prend une phrase
+    d'etat pour un accuse — et, pire, une invite finit tapee sur le papier.
+
+    /!\\ On NE rappelle PAS ensure_ready() par ligne : ping() n'est pas fiable
+    (l'ENQ ne repond pas hors init), il declencherait un start() qui attend
+    60 s un appui sur ON LINE au lieu d'imprimer. La session est ouverte UNE
+    fois, ici, et print_text est appele avec check=False."""
+    print("# IFD-2 : ouverture de la session (presser ON LINE)")
     if not start():
-        print("ECHEC : session non ouverte.")
+        print("ERR session non ouverte")
         return
-    print("PRET. Chaque ligne recue s'imprime.")
+    print("# PRET")
     while True:
         line = sys.stdin.readline()
         if not line:
             continue
-        line = line.rstrip('\n')
+        line = line.rstrip('\n').rstrip('\r')
         if not line:
-            newline()          # ligne vide = saut de ligne
+            newline()                       # ligne vide = saut de ligne
+            print("OK")
             continue
-        print_text(line)
-        print("OK")            # accuse pour l'hote (serve.py l'attend)
+        try:
+            print_text(line, check=False)   # session deja ouverte
+            print("OK")
+        except Exception as e:
+            print("ERR %s" % e)
 
 # PAS d'auto-execution : ce module se deploie en ifd2.py et s'utilise depuis le
 # REPL (ifd2.start(), ifd2.print_text(...)). Un `if __name__ == "__main__": run()`

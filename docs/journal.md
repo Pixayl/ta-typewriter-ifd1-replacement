@@ -281,3 +281,19 @@ Page inaccessible sur le Pi (`ifd2.local:8575` et l'IP, port fermé). Cause : `s
 **Corrigé** : le serveur démarre toujours. Le port est redétecté à chaud à chaque message (le numéro change d'une prise à l'autre), avec 3 tentatives espacées de 3 s, et la page affiche en permanence l'état réel — « imprimante absente », « injoignable », ou « prête (/dev/ttyACM0) ». Brancher le Pico suffit à faire repartir l'impression, **sans redémarrer le service**. Vérifié dans les deux sens hors matériel (page servie sans Pico, puis reprise automatique dès qu'il apparaît).
 
 Au passage, piège SSH : `ifd2.local` résout **deux** adresses et le client tentait l'IPv6 lien-local, sur laquelle sshd n'écoute pas → « Connection refused », qui ressemble à tort à un SSH désactivé. Remède : `ssh -4`, ou `AddressFamily inet` dans `~/.ssh/config`. (Rappel de méthode : « connection refused » ≠ « timeout » — la première prouve que l'hôte est joignable et a répondu.)
+
+### 🐛 Le bug qui imprimait ses propres invites
+
+Symptôme : LED ON LINE allumée, page web en ligne annonçant « imprimante prête », mais **rien ne s'imprime**, les messages mettent des minutes à basculer en échec dans l'historique — et après un redémarrage machine, la Xerox tape **`IFD-2 en attente de eTest`**, soit une invite du firmware mélangée à un message de l'utilisateur.
+
+Deux fautes de conception, la même racine : **la prose et le protocole partageaient la liaison USB.**
+
+1. `run()` appelait `print_text(line)` avec `check=True` → `ensure_ready()` → `ping()`. Or on sait depuis ce matin que l'ENQ ne répond pas hors init : `ping()` revient vide, donc `ensure_ready()` conclut « session expirée » et appelle `start()`, **qui attend 60 s un appui sur ON LINE** au lieu d'imprimer. Aucun `OK` n'était émis ; `serve.py` attendait son accusé jusqu'au timeout (180 s), trois fois de suite → les minutes observées.
+2. Les invites de `start()` (`>>> PRESSE ON LINE <<<`) partaient sur stdout, c'est-à-dire sur la même liaison. Elles ont été lues comme du texte à taper : d'où l'invite imprimée sur le papier.
+
+**Corrigé** :
+- La session est ouverte **une seule fois** dans `run()`, puis `print_text(line, check=False)` — on ne rouvre jamais une session par ligne sur la foi d'un `ping()` non fiable.
+- **Protocole de ligne explicite** vers l'hôte : `OK` = imprimé, `ERR <...>` = échec, `# <...>` = bavardage humain. Les dix messages d'état du firmware sont préfixés `#`.
+- `serve.py` distingue les trois cas, remonte le bavardage à la page (utile : « presser ON LINE » s'affiche maintenant dans l'interface), vide le tampon d'entrée avant chaque envoi, et calcule le timeout selon la longueur (60 s + 3 s/caractère — la machine tape ~1 car/s, un timeout fixe déclarait en échec un long message qui s'imprimait très bien).
+
+Leçon générale, à retenir pour la suite : **une liaison qui porte un protocole ne doit pas porter de prose.** Sans marqueur, l'hôte prend une phrase d'état pour un accusé — ou la fait taper sur le papier.
