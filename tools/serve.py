@@ -27,7 +27,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 try:
     import serial
 except ImportError:
-    raise SystemExit("pyserial manquant : pip install pyserial")
+    import os
+    import sys as _sys
+    _venv = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "venv", "bin", "python")
+    _msg = ["pyserial manquant pour CET interpreteur :", "    %s" % _sys.executable,
+            "", "Attention : `pip` et `python3` ne pointent pas forcement sur le",
+            "meme Python. Installer avec l'interpreteur qui execute le script :",
+            "    %s -m pip install pyserial" % _sys.executable]
+    if os.path.exists(_venv):
+        _msg += ["", "Ou plus simple, le venv du projet l'a deja :",
+                 "    %s %s" % (_venv, os.path.abspath(__file__))]
+    raise SystemExit("\n".join(_msg))
 
 MAX_LEN = 500          # garde-fou : la machine tape ~1 caractere/seconde
 
