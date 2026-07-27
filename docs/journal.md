@@ -204,3 +204,18 @@ Ce que ça change par rapport à ce qu'on avait deviné :
 - 🆕 L'auteur documente le plantage qu'on a vécu : des octets incompris ne sont « pas toujours ignorés », la machine plante parfois et **seul un cycle secteur la récupère**. Notre « sapin de Noël » a un nom.
 
 **Contradiction à trancher au banc** : le texte de l'article donne l'init en paires *avec* `A0` (`A0 00, A1 00, A4 00, A2 00`), alors que le listing du même auteur envoie `onl_tab: A1, A4, A2, 0` en 4 octets simples — la forme qui marche chez nous. Comme tout le reste du protocole est strictement en paires, l'hypothèse propre est `A1 00, A4 00, A2 00` (sans `A0`) : elle réconcilie les deux lectures et ferait réellement arriver l'ENQ, que notre forme actuelle avale en paramètre de `A1`. Ce qui expliquerait aussi pourquoi `ping()` n'a jamais rien renvoyé.
+
+## 2026-07-27 — 🎯 L'ENQ RÉPOND : le bloc de statut est reproductible
+
+**Contradiction tranchée, et par le listing lui-même** : la boucle qui consomme `onl_tab` **accole un `00` à chaque octet de la table** (`move.b (a1)+,d4 / senden / move.b #0,d4 / senden`). L'init réellement émise est donc `A1 00, A4 00, A2 00, 00 00` — **des paires régulières, sans `A0`**. Nos 4 octets bruts se recadraient en `(A1,A4)` + `(A2,00)` : l'ENQ partait comme *numéro de version* du START. La boucle draine aussi l'écho après chaque paire (`bsr raus`).
+
+Firmware passé aux paires (repli automatique sur les octets bruts si pas d'écho `A2`) → **au premier essai** :
+```
+online confirme (echo : a1 a4 03 01 01 51 00 01 8f 02 00 a2)
+```
+`a1`, `a4`, puis **`03 01 01 51 00 01 8f 02 00`** (9 octets), puis `a2`. C'est la réponse à l'ENQ — et c'est mot pour mot la chaîne notée plus haut comme « le seul écho réussi jamais obtenu » : on sait enfin d'où elle venait et **comment la reproduire à volonté**. Format non documenté par l'article (qui dit seulement « la machine signale son état ») : à décoder en faisant varier l'état de la machine (papier, capot, marguerite) et en comparant.
+Corollaire : `ping()` a une chance de fonctionner maintenant. Avant ce correctif il ne pouvait pas — on n'avait jamais envoyé d'ENQ valide.
+
+**Piège de banc, à ne pas reproduire** : le fichier a été déployé en `main.py` sur le Pico au lieu de `ifd2.py`. MicroPython exécute `main.py` au démarrage → `run()` s'est lancé seul, a confisqué `stdin` puis s'est bloqué 60 s dans `start()` → **REPL inaccessible**. Récupération : Ctrl-C puis `mpremote fs rm :main.py`. L'auto-exécution (`if __name__ == "__main__"`) a été **retirée du firmware** et l'avertissement mis en tête de fichier.
+
+**Correction épistémique** : le `em_int` cité plus haut est le code **côté hôte** (pilote Atari ST), pas côté machine — `lesen` y lit ce que la machine envoie. Il montre donc ce que l'auteur *s'attendait* à recevoir, pas ce que la machine *peut* émettre : c'est une corroboration du dossier « terminal impossible », pas une preuve. La preuve reste le test `listen()` sur lien fiable + le manuel. À noter d'ailleurs : la branche `ni_line` (ni `01` ni `02`) **répond deux octets nuls** au lieu d'ignorer — l'auteur savait que d'autres octets arrivent.

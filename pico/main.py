@@ -10,8 +10,10 @@
 #   GP3 (entree)   <-diviseur 1k/2k- vert (DTR : flux)
 #   GND <-> marron.   Pico alimente par USB. Jamais B/E.
 #
-# Usage : copier ce fichier en main.py sur le Pico (MicroPython). Il attend du texte
-# ligne par ligne sur l'USB (stdin) et l'imprime. Fonctions testables depuis le REPL.
+# Usage :  mpremote fs cp pico/main.py :ifd2.py   puis Ctrl-D, puis au REPL :
+#   import ifd2 ; ifd2.start()   (presser ON LINE)  ; ifd2.print_text("...")
+# /!\ NE PAS deployer sous le nom main.py : MicroPython l'executerait au
+#     demarrage et run() confisquerait stdin et le REPL.
 
 from machine import UART, Pin
 import sys
@@ -559,6 +561,15 @@ def wait_ready(busy_level=0, timeout_ms=2500):
 
 # ------------------------------------------------------------------ boucle principale
 def run():
+    """Serveur d'impression : lit stdin ligne par ligne et imprime.
+
+    /!\\ MONOPOLISE stdin ET LE REPL. A n'appeler qu'en connaissance de cause.
+    Ne PAS deployer ce fichier sous le nom main.py sur le Pico : MicroPython
+    l'executerait au demarrage, run() prendrait la main sur stdin et le REPL
+    deviendrait inaccessible (vecu le 2026-07-27). Deployer sous ifd2.py.
+
+    Utilise l'ancien connect() (impulsion DSR) : c'est start() qui implemente
+    le vrai handshake (appui ON LINE cote machine)."""
     print("IFD-2 : connexion a la machine...")
     if not connect():
         print("ECHEC 0x01 -> cycle secteur machine, puis reset Pico.")
@@ -573,5 +584,7 @@ def run():
         print_text(line.rstrip('\n'))
         newline()
 
-if __name__ == "__main__":
-    run()
+# PAS d'auto-execution : ce module se deploie en ifd2.py et s'utilise depuis le
+# REPL (ifd2.start(), ifd2.print_text(...)). Un `if __name__ == "__main__": run()`
+# se declencherait si le fichier etait copie en main.py et bloquerait le REPL.
+# Pour lancer le serveur d'impression, appeler run() explicitement.
