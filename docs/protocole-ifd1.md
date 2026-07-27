@@ -76,7 +76,13 @@ nionline:
 ni_line: ; ni l'un ni l'autre -> deux octets muets, rien de plus
 ```
 
-**Le clavier n'est donc pas transmissible, par conception.** En ONLINE, « la saisie au clavier de la machine n'est plus possible » ; en OFFLINE, la machine est une machine à écrire et n'émet que ces codes de touche. La voie retour ne porte que ces deux notifications et les échos de commandes. Cela confirme le test négatif du journal (`listen()` sur lien fiable) : **le projet « terminal » est impossible, ce n'est pas un défaut de montage.**
+⚠️ **Portée exacte de cette preuve — ne pas la surestimer.** `em_int` est du code **côté hôte** : il montre ce que l'auteur du pilote s'attendait à recevoir, pas ce que la machine sait émettre. Trois réserves :
+
+1. `01` et `02` sont des **codes de touche** : la chaîne clavier → UART existe donc physiquement, y compris en OFFLINE. Le filtre est logiciel, dans le firmware de la machine.
+2. La branche `ni_line` (octet reçu ni `01` ni `02`) ne se contente pas d'ignorer : elle **renvoie deux octets nuls**. Accuser réception de ce qu'on jette ressemble à un pompage — l'auteur savait que d'autres octets peuvent arriver.
+3. Les états **START seul** (`A1` sans `A2`) et **ETX** (`A3`, « transmission interrompue, en attente de reprise ») n'ont jamais été explorés. Le test négatif du journal portait sur ONLINE, où le verrouillage est documenté et donc attendu.
+
+Ce qui est établi : **en ONLINE, « la saisie au clavier n'est plus possible »** (article), et le test empirique le confirme. Ce qui ne l'est pas : qu'aucun autre état ne transmette les frappes. Voir `kb_hunt()` et `probe_cmd()` dans le firmware — `A5`, `A6`, `A7` ne sont pas documentés et le second octet « numéro de version » peut porter un mode.
 
 Le retour OFFLINE depuis le clavier se fait par une combinaison variable selon le modèle (`CE` sur SE 325, `MOD+ONL` sur les anciennes Gabriele 9009).
 

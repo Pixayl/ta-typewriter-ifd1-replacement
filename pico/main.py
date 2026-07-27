@@ -390,6 +390,93 @@ def listen(seconds=20):
                 got += 1
     print("fini : %d octet(s)" % got)
 
+# ------------------------------------------------------------ chasse au clavier
+# Le clavier atteint l'UART : les codes 01 (touche ON LINE) et 02 (touche
+# OFFLINE) sont des CODES DE TOUCHE emis sur le fil. La question n'est donc pas
+# "est-ce cable" mais "qu'est-ce qui filtre les autres touches, et ce filtre
+# a-t-il un interrupteur". Les outils ci-dessous explorent les etats qu'on n'a
+# jamais visites — le test negatif du journal portait sur ONLINE, ou le
+# verrouillage du clavier est documente et donc attendu.
+
+def _listen_raw(seconds, label):
+    """Ecoute la ligne et horodate tout octet recu."""
+    print("--- %s" % label)
+    print("    TAPE PLUSIEURS TOUCHES (aeiou, chiffres, Return) pendant %d s..."
+          % seconds)
+    _flush_in()
+    t0 = time.ticks_ms()
+    got = []
+    while time.ticks_diff(time.ticks_ms(), t0) < seconds * 1000:
+        if uart.any():
+            b = uart.read(1)
+            if b:
+                got.append(b[0])
+                print("      t=%6d ms   0x%02X" %
+                      (time.ticks_diff(time.ticks_ms(), t0), b[0]))
+    print("    => %d octet(s)" % len(got))
+    return got
+
+
+def kb_hunt(seconds=20):
+    """Cherche un etat dans lequel la machine transmet les frappes clavier.
+
+    Parcourt les quatre etats interessants, en ecoutant dans chacun :
+      1. OFFLINE au repos (hote present) — l'etat ou le clavier fonctionne
+      2. apres START (A1 00) seul — 'passage prepare', jamais explore
+      3. apres ENQ (A4 00) — la machine vient de signaler son etat
+      4. apres ETX (A3 00) — en ligne mais transmission interrompue
+
+    A LANCER MACHINE EN OFFLINE (LED eteinte). Rend la machine offline a la fin.
+    Tout octet different de 01 / 02 est une trouvaille : le noter et me le dire."""
+    dsr.value(0)                       # hote present, en permanence
+    found = {}
+    found['1-offline'] = _listen_raw(seconds, "ETAT 1 : OFFLINE au repos")
+
+    _tx([0xA1, 0x00]); time.sleep_ms(INIT_GAP_MS)
+    found['2-start'] = _listen_raw(seconds, "ETAT 2 : apres START (A1 00)")
+
+    _tx([0xA4, 0x00]); time.sleep_ms(INIT_GAP_MS)
+    found['3-enq'] = _listen_raw(seconds, "ETAT 3 : apres ENQ (A4 00)")
+
+    _tx([0xA2, 0x00]); time.sleep_ms(500)      # ONLINE
+    _tx([0xA3, 0x00]); time.sleep_ms(INIT_GAP_MS)
+    found['4-etx'] = _listen_raw(seconds, "ETAT 4 : ONLINE puis ETX (A3 00)")
+
+    _tx([0xA3, 0x00]); time.sleep_ms(200)      # retour propre en OFFLINE
+    _tx([0xA0, 0x00]); time.sleep_ms(200)
+
+    print("\n===== BILAN =====")
+    for k in sorted(found):
+        octets = found[k]
+        inedits = [b for b in octets if b not in (0x01, 0x02)]
+        print("  %-12s : %2d octet(s)%s" %
+              (k, len(octets),
+               "   <<< INEDIT : %s" % ' '.join('%02X' % b for b in inedits)
+               if inedits else ""))
+    return found
+
+
+def probe_cmd(b1, b2=0x00, wait_ms=1500):
+    """Envoie UNE commande inconnue et ecoute la reponse.
+
+    Les commandes d'etat documentees vont de A0 a A4 ; A5, A6, A7 ne le sont
+    pas et existent peut-etre. Le second octet est un 'numero de version'
+    normalement nul — il peut lui aussi porter un mode.
+
+    /!\\ L'article previent qu'un octet incompris peut FAIRE PLANTER la machine,
+    et que seul un cycle secteur la recupere. Un essai a la fois, machine
+    accessible, rien d'important en cours."""
+    _flush_in()
+    _tx([b1, b2])
+    t0 = time.ticks_ms()
+    r = b''
+    while time.ticks_diff(time.ticks_ms(), t0) < wait_ms:
+        if uart.any():
+            r += uart.read()
+    print("%02X %02X  ->  %s" % (b1, b2, r.hex(' ') if r else 'rien'))
+    return r
+
+
 def wait_online_request(timeout_s=60):
     """Attend que la MACHINE demande la connexion.
 
