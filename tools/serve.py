@@ -57,37 +57,83 @@ def trouver_port():
 # --------------------------------------------------------------- file d'attente
 class Printer(threading.Thread):
     """Un seul fil parle au Pico : la liaison est sequentielle et lente, et deux
-    messages entrelaces desynchroniseraient le protocole (paires d'octets)."""
+    messages entrelaces desynchroniseraient le protocole (paires d'octets).
+
+    Le serveur web ne depend PAS de la presence du Pico : sans lui la page
+    s'affiche quand meme et annonce l'imprimante absente. Sortir en erreur
+    quand le Pico n'est pas branche rendrait la page inaccessible au moment
+    precis ou on en a besoin pour diagnostiquer."""
 
     daemon = True
+    ESSAIS = 3             # tentatives d'ouverture du port par message
+    ATTENTE = 3            # secondes entre deux tentatives
 
-    def __init__(self, port, baud=115200):
+    def __init__(self, port=None, baud=115200):
         super().__init__()
         self.q = queue.Queue()
         self.port, self.baud = port, baud
+        self.fixe = port is not None       # port impose ou detecte a chaud
         self.log = []                      # derniers messages, pour la page
         self.ser = None
+        self.etat = "imprimante : recherche..."
 
     def submit(self, text):
         self.q.put(text)
         return self.q.qsize()
 
+    def _ouvrir(self):
+        """Ouvre le port, en le redetectant si besoin (le numero change d'une
+        prise a l'autre, et le Pico peut avoir ete rebranche)."""
+        if self.ser is not None:
+            return True
+        port = self.port if self.fixe else trouver_port()
+        if not port:
+            self.etat = "imprimante absente (aucun Pico sur le bus USB)"
+            return False
+        self.ser = serial.Serial(port, self.baud, timeout=5)
+        self.port = port
+        time.sleep(0.5)
+        self.etat = "imprimante prete (%s)" % port
+        return True
+
+    def veiller(self):
+        """Tient l'etat a jour meme quand personne n'imprime, pour que la page
+        dise la verite au lieu de rester sur un vieux message."""
+        while True:
+            if self.ser is None and not self.fixe and trouver_port() is None:
+                self.etat = "imprimante absente (aucun Pico sur le bus USB)"
+            time.sleep(5)
+
     def run(self):
+        threading.Thread(target=self.veiller, daemon=True).start()
         while True:
             text = self.q.get()
-            try:
-                if self.ser is None:
-                    self.ser = serial.Serial(self.port, self.baud, timeout=5)
-                    time.sleep(0.5)
-                for line in text.split('\n'):
-                    self.ser.write((line + '\n').encode('utf-8', 'replace'))
-                    self.ser.flush()
-                    # le Pico repond "OK" quand la ligne est sortie sur le papier
-                    self._wait_ok()
-                self._note(text, "imprime")
-            except Exception as e:                      # lien coupe, Pico reboote
-                self.ser = None
-                self._note(text, "ECHEC : %s" % e)
+            for essai in range(1, self.ESSAIS + 1):
+                try:
+                    if not self._ouvrir():
+                        raise IOError("aucun Pico detecte")
+                    for line in text.split('\n'):
+                        self.ser.write((line + '\n').encode('utf-8', 'replace'))
+                        self.ser.flush()
+                        # le Pico repond "OK" quand la ligne est sur le papier
+                        self._wait_ok()
+                    self._note(text, "imprime")
+                    break
+                except Exception as e:                  # lien coupe, Pico absent
+                    self._fermer()
+                    self.etat = "imprimante injoignable : %s" % e
+                    if essai == self.ESSAIS:
+                        self._note(text, "ECHEC : %s" % e)
+                    else:
+                        time.sleep(self.ATTENTE)
+
+    def _fermer(self):
+        try:
+            if self.ser is not None:
+                self.ser.close()
+        except Exception:
+            pass
+        self.ser = None
 
     def _wait_ok(self, timeout=180):
         """Attend l'accuse du Pico. La machine tape lentement : large timeout."""
@@ -131,10 +177,15 @@ PAGE = """<!doctype html>
        border-bottom: 1px solid color-mix(in srgb, currentColor 12%%, transparent); }
   li .quand { opacity: .5; margin-right: .6rem; font-variant-numeric: tabular-nums; }
   li .etat { float: right; opacity: .6; font-size: .8rem; }
+  #machine { font-size: .85rem; padding: .5rem .8rem; border-radius: 6px;
+             margin-bottom: 1rem;
+             border: 1px solid color-mix(in srgb, currentColor 25%%, transparent); }
+  #machine.absente { border-style: dashed; opacity: .75; }
 </style>
 <h1>Mots doux</h1>
 <p class="sub">Ça sort sur la Xerox 575, à la vitesse d'une machine à écrire.
 Entourez un mot d'<code>*étoiles*</code> pour le mettre en gras.</p>
+<div id="machine">état…</div>
 <form id="f">
   <textarea id="t" maxlength="%(max)d" placeholder="Écris quelque chose de gentil…"
             autofocus></textarea>
@@ -155,9 +206,12 @@ document.getElementById('f').onsubmit = async (e) => {
   b.disabled = false; b.textContent = 'Imprimer';
   rafraichir();
 };
+const mach = document.getElementById('machine');
 async function rafraichir() {
   const r = await (await fetch('/journal')).json();
-  j.innerHTML = r.map(m =>
+  mach.textContent = r.etat;
+  mach.className = /absente|injoignable/.test(r.etat) ? 'absente' : '';
+  j.innerHTML = r.messages.map(m =>
     `<li><span class="quand">${m.quand}</span>${m.texte.replace(/[<&]/g, c =>
       ({'<':'&lt;','&':'&amp;'}[c]))}<span class="etat">${m.etat}</span></li>`).join('');
 }
@@ -181,7 +235,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/":
             self._send(200, PAGE % {"max": MAX_LEN})
         elif self.path == "/journal":
-            self._send(200, json.dumps(self.printer.log),
+            self._send(200, json.dumps({"etat": self.printer.etat,
+                                        "messages": self.printer.log}),
                        "application/json; charset=utf-8")
         else:
             self._send(404, "rien ici")
@@ -211,17 +266,16 @@ def main():
     ap.add_argument("--http-port", type=int, default=8575)
     a = ap.parse_args()
 
-    if not a.port:
-        a.port = trouver_port()
-        if not a.port:
-            raise SystemExit(
-                "Aucun Pico trouve sur le bus USB.\n"
-                "  - est-il branche ? (verifier le cable, essayer une autre prise)\n"
-                "  - `mpremote devs` doit le lister\n"
-                "  - et surtout : AUCUN autre programme ne doit tenir le port.\n"
-                "    mpremote le garde en exclusivite — quitter toute session\n"
-                "    `mpremote repl` ou `mpremote exec` avant de lancer serve.py.")
-        print("Pico detecte sur %s" % a.port)
+    # On NE sort PAS si le Pico est absent : la page doit rester accessible,
+    # c'est justement la qu'on en a besoin pour comprendre pourquoi.
+    detecte = a.port or trouver_port()
+    if detecte:
+        print("Pico : %s" % detecte)
+    else:
+        print("Pico : absent pour l'instant — la page fonctionne, l'impression")
+        print("       reprendra des qu'il sera branche. Verifier que :")
+        print("       - il est sur le port USB de donnees (celui du MILIEU sur un Zero W)")
+        print("       - aucune session mpremote ne tient le port (exclusivite)")
 
     Handler.printer = Printer(a.port, a.baud)
     Handler.printer.start()

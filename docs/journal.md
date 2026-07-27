@@ -273,3 +273,11 @@ Trois pièges anticipés, qui sont les causes de panne classiques :
 - **Le Wi-Fi du Zero W est 2,4 GHz uniquement**, et le code pays doit être renseigné sinon la radio reste éteinte.
 
 Rappel de sécurité consigné dans le doc : le service écoute sur tout le réseau local **sans authentification** — acceptable chez soi, à ne jamais exposer sur Internet.
+
+### Correctif : le serveur web ne doit pas dépendre du Pico
+
+Page inaccessible sur le Pi (`ifd2.local:8575` et l'IP, port fermé). Cause : `serve.py` **sortait en erreur** quand aucun Pico n'était détecté → systemd le relançait en boucle → aucune page. Défaut de conception : c'est précisément quand l'imprimante manque qu'on a besoin de la page pour comprendre.
+
+**Corrigé** : le serveur démarre toujours. Le port est redétecté à chaud à chaque message (le numéro change d'une prise à l'autre), avec 3 tentatives espacées de 3 s, et la page affiche en permanence l'état réel — « imprimante absente », « injoignable », ou « prête (/dev/ttyACM0) ». Brancher le Pico suffit à faire repartir l'impression, **sans redémarrer le service**. Vérifié dans les deux sens hors matériel (page servie sans Pico, puis reprise automatique dès qu'il apparaît).
+
+Au passage, piège SSH : `ifd2.local` résout **deux** adresses et le client tentait l'IPv6 lien-local, sur laquelle sshd n'écoute pas → « Connection refused », qui ressemble à tort à un SSH désactivé. Remède : `ssh -4`, ou `AddressFamily inet` dans `~/.ssh/config`. (Rappel de méthode : « connection refused » ≠ « timeout » — la première prouve que l'hôte est joignable et a répondu.)
