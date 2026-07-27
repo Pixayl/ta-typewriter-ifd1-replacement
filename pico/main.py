@@ -231,9 +231,28 @@ def strike(idx):
     send_pair(idx, 0x80 | (FORCE & 0x3F))
     col += 1
 
+USE_REAL_SPACE = False    # voir ci-dessous — a basculer a True pour tester
+
 def space():
+    """Espace.
+
+    v1 (par defaut) : frappe A BLANC (0x01, 0x80) — fait tourner la marguerite
+    pour rien, mais c'est une FRAPPE, donc elle emet un accuse DTR et reste
+    dans le controle de flux avec le reste de la ligne.
+
+    v2 (USE_REAL_SPACE) : la vraie commande d'espace de la spec — 0x83 <n>,
+    avec n = 0 qui avance d'exactement un pas d'ecriture (voir
+    docs/protocole-ifd1.md). Plus propre et plus rapide. MAIS c'est un
+    MOUVEMENT : d'apres tout ce qu'on a mesure, les mouvements n'emettent
+    PAS d'accuse DTR — donc il sort du controle de flux et il faut le cadencer
+    a la main. A VALIDER AU BANC : imprimer une ligne avec beaucoup d'espaces
+    et verifier qu'elle ne se desynchronise pas."""
     global col
-    send_pair(0x01, 0x80)      # frappe a blanc
+    if USE_REAL_SPACE:
+        _tx([0x83, 0x00])
+        time.sleep_ms(120)
+    else:
+        send_pair(0x01, 0x80)
     col += 1
 
 def _wait_idle(quiet_ms=400, timeout_ms=8000):
