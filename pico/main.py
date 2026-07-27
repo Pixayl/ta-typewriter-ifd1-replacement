@@ -147,21 +147,29 @@ def send_pair(b1, b2, flow=None, timeout_ms=4000):
 
 INIT_GAP_MS = 300   # valeur de la version de reference (fiable)
 
-def online(retries=4):
+def online(retries=4, flow=False):
     """VERSION DE REFERENCE (celle qui etait fiable) : envoie l'init et verifie
     l'echo global de 0xA2. Pas de fermeture prealable (A3 bloque la machine),
     pas de renvoi commande par commande (ce sont des transitions d'etat)."""
     for attempt in range(1, retries + 1):
         _flush_in()
-        for b1, b2 in ((0xA0, 0), (0xA1, 0), (0xA4, 0), (0xA2, 0)):
-            _tx([b1, b2])
-            time.sleep_ms(INIT_GAP_MS)
+        # Sequence EXACTE du pilote Atari ST (ST Computer 8/1988, Gabriele 9009) :
+        #     onl_tab : $A1, $A4, $A2, 0
+        # => QUATRE OCTETS SIMPLES, envoyes un a un avec un delai entre chacun.
+        # PAS de $A0 (CLEAR) en tete : c'est justement la commande qui verrouille
+        # la machine et la rend sourde a la suite.
+        for b in (0xA1, 0xA4, 0xA2, 0x00):
+            if flow:
+                send_byte(b, 3000)
+            else:
+                _tx([b])
+                time.sleep_ms(INIT_GAP_MS)
         time.sleep_ms(400)
         echo = uart.read() or b''
         if 0xA2 in echo:
             print("online confirme (echo : %s)" % echo.hex(' '))
             time.sleep_ms(500)
-            _tx([0x82, 0x0F])            # reset position
+            _tx([0x82, 0x1F])            # reset position (valeur du pilote ST)
             time.sleep_ms(2000)          # calage chariot
             _tx([0x80, PITCH])           # pas d'ecriture
             time.sleep_ms(300)
@@ -340,19 +348,68 @@ def listen(seconds=20):
                 got += 1
     print("fini : %d octet(s)" % got)
 
-def start(invert=False):
-    """UNE commande pour tout faire : connexion + passage online, avec verifications.
-    Evite de coller plusieurs lignes dans le REPL (elles se marchent dessus)."""
-    print("connexion...")
-    if not connect(invert=invert):
-        print("ECHEC : pas de 0x01. -> cycle secteur machine, attendre le chariot, reessayer.")
+def wait_online_request(timeout_s=60):
+    """Attend que la MACHINE demande la connexion.
+
+    Point cle du protocole : c'est la machine qui appelle l'hote, pas l'inverse.
+    Quand l'utilisateur presse la touche ON LINE, elle emet 0x01 = 'un hote est
+    la ? reponds-moi'. L'hote doit alors envoyer la sequence d'init.
+    (Le manuel le dit : "en frappant une fois sur la touche ON LINE on etablit
+    un raccord logique avec l'ordinateur personnel connecte".)
+    """
+    dsr.value(0)              # hote present, en permanence
+    _flush_in()
+    t0 = time.ticks_ms()
+    while time.ticks_diff(time.ticks_ms(), t0) < timeout_s * 1000:
+        if uart.any():
+            b = uart.read(1)
+            if b == b'\x01':
+                return True
+            elif b:
+                print("  (recu %s)" % b.hex())
+    return False
+
+
+def observe(seconds=12):
+    """PURE OBSERVATION : presse ON LINE, puis on ECOUTE sans rien envoyer.
+    But : voir la sequence d'appel COMPLETE de la machine, avec les temps.
+    On a peut-etre toujours parle par-dessus elle."""
+    print(">>> PRESSE ON LINE, puis ne touche plus a rien <<<")
+    _flush_in()
+    t0 = time.ticks_ms()
+    n = 0
+    while time.ticks_diff(time.ticks_ms(), t0) < seconds * 1000:
+        if uart.any():
+            b = uart.read(1)
+            if b:
+                print("  t=%6d ms  0x%02X" % (time.ticks_diff(time.ticks_ms(), t0), b[0]))
+                n += 1
+    print("fini : %d octet(s)" % n)
+
+
+def probe_after(b1, b2, delay_ms=1200):
+    """Attend l'appel de la machine (ON LINE), puis envoie UNE commande choisie
+    et affiche la reponse. Permet de savoir si le 'a0' recu est un ECHO de notre
+    commande ou un message propre a la machine : essayer probe_after(0xA1, 0)."""
+    if not wait_online_request(60):
+        print("pas d'appel recu")
+        return None
+    time.sleep_ms(delay_ms)
+    return step(b1, b2)
+
+
+def start(timeout_s=60, delay_ms=1200, flow=False):
+    """Ouvre la session. NECESSITE un appui sur la touche ON LINE de la machine.
+    delay_ms : temps d'attente entre le 0x01 et l'init — A CALIBRER (essayer
+    0, 100, 300, 600, 1200 : l'ancienne mesure reposait sur un faux declencheur)."""
+    print(">>> PRESSE maintenant la touche ON LINE de la machine <<<")
+    if not wait_online_request(timeout_s):
+        print("ECHEC : pas de demande (0x01) recue. La machine est-elle allumee ?")
         return False
-    time.sleep_ms(1200)         # MESURE : la machine n'accepte les commandes qu'a
-                                # partir de ~1 s apres le 0x01 (600 ms = trop tot,
-                                # 3 s = elle repete son 0x01). Voir window_test().
-    print("passage online...")
-    if not online():
-        print("ECHEC : l'init n'a pas ete confirmee. -> cycle secteur machine, Ctrl-D, reessayer.")
+    print("demande recue (0x01) — init dans %d ms..." % delay_ms)
+    time.sleep_ms(delay_ms)
+    if not online(retries=3, flow=flow):
+        print("ECHEC : init non confirmee. Represse ON LINE et relance start().")
         return False
     print("PRET (LED ON LINE allumee).")
     return True

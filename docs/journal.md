@@ -158,3 +158,18 @@ Isolation méthodique (strikes OK → espaces OK → newline KO) : le bug n'éta
 | `0x82 0x01` | ⚠️ à éviter (chariot n'importe où puis blocage) |
 **Points clés** : les commandes de MOUVEMENT n'émettent **pas** d'accusé DTR (contrairement aux frappes) → `newline()` sans contrôle de flux, précédé de `_wait_idle()` (attend que DTR soit silencieux 400 ms = buffer d'impression vidé). Ajout de `raw(b1,b2)` pour explorer, et `set_pitch(p)` qui recalcule `LINE_LEN = LINE_UNITS // PITCH`.
 **Résultat : impression multi-lignes correcte, avec pas condensé (0x0A) appliqué automatiquement à l'init.**
+
+## 2026-07-27 — 🔑 LE VRAI SENS DU HANDSHAKE (découverte utilisateur + doc allemande)
+
+**1. C'est la MACHINE qui appelle l'hôte, pas l'inverse.** Observation décisive de l'utilisateur : le `0x01` arrive **exactement au moment où il presse la touche ON LINE**, jamais spontanément. Notre impulsion DSR n'y est pour rien. Le manuel le disait depuis le début : « en frappant une fois sur la touche ON LINE on établit un raccord logique avec l'ordinateur personnel **connecté** ».
+→ Procédure correcte : l'hôte maintient DSR asserté (présent), **l'utilisateur presse ON LINE**, la machine émet `0x01`, l'hôte répond par la séquence d'init.
+→ Conséquence : tous les tests `step()`/`window_test` antérieurs (déclenchés par notre impulsion DSR) étaient **sans valeur**.
+
+**2. La séquence d'init était fausse.** Source : *ST Computer* 8/1988, pilote Atari ST pour Gabriele 9009 :
+```asm
+onl_tab:  $A1, $A4, $A2, 0
+```
+= **quatre OCTETS SIMPLES** (A1, A4, A2, 00), un par un avec délai — **et surtout PAS de `$A0` en tête**. Or `A0` (CLEAR) est justement la commande qui verrouille le clavier puis rend la machine sourde : on commençait l'init par ce qui la bloque. Cohérent avec le seul écho réussi jamais obtenu : `a1 a4 03 01 01 51 00 01 8f 02 00 a2` — **commence par a1, aucun a0**.
+Puis : `82 1F` (reset position — on utilisait `0F`), puis `80 <pas>`.
+
+Firmware corrigé en conséquence (`online()`), en attente de test.
