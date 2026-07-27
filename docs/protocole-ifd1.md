@@ -29,21 +29,58 @@ Toutes les commandes font **exactement deux octets** : le premier définit la co
 **OFFLINE → ONLINE : `A0 00`, `A1 00`, `A4 00`, `A2 00`** — l'ordre est imposé, pas arbitraire.
 **ONLINE → OFFLINE : `A3 00`, `A0 00`.**
 
-> ⚠️ **Divergence source/source.** Le texte de l'article donne la séquence ci-dessus *avec* `A0` en tête. Mais le listing du même auteur, en partie 2, envoie :
+> ⚠️ **Le texte et le listing divergent sur `A0` — mais pas sur le reste.** Le texte donne la séquence ci-dessus *avec* `A0` en tête. Le listing du même auteur, lui, part de :
 > ```asm
-> onl_tab:   dc.b $A1, $A4, $A2, 0        ; 4 octets, envoyés tels quels
-> offl_tab:  dc.b $A3, 0, $A0, 0          ; 2 paires régulières
+> onl_tab:   dc.b $A1, $A4, $A2, 0
+> offl_tab:  dc.b $A3, 0, $A0, 0
 > ```
-> `onl_tab` n'est donc **pas** une suite de paires (ce serait `A1 A4` puis `A2 00`), contrairement à `offl_tab`. C'est cette forme-là — 4 octets simples, sans `A0` — qui passe **du premier coup sur notre machine**, là où la séquence en paires avec `A0` ne passait qu'une fois sur trois. Voir le journal, entrée du 2026-07-27.
-> Reste à tester : les paires propres `A1 00`, `A4 00`, `A2 00` (sans `A0`), qui réconcilieraient les deux lectures — et qui, elles, feraient réellement parvenir l'ENQ.
+> et la boucle qui consomme `onl_tab` **ajoute le `00` elle-même après chaque octet** :
+> ```asm
+> loop9:  move.b (a1)+,d4    ; octet de la table
+>         bsr senden
+>         bsr delay1
+>         move.b #0,d4       ; ...suivi du numero de version
+>         bsr senden
+>         bsr delay2
+>         bsr raus           ; et on vide l'echo
+>         dbra d1,loop9
+> ```
+> **L'init réellement émise est donc `A1 00`, `A4 00`, `A2 00`, `00 00`** : des paires régulières, cohérentes avec tout le reste du protocole, et **sans `A0`**. Le désaccord se réduit à la présence de `A0`, et c'est le listing qui a raison en pratique : sur notre machine, sans `A0`, l'init passe du premier coup, alors qu'avec elle ne passait qu'une fois sur trois.
+>
+> Conséquence pour nous : envoyer les 4 octets *bruts* (ce que faisait notre firmware) les recadre en `(A1,A4)` + `(A2,00)` — **l'ENQ est avalé comme numéro de version du START**. Ça fonctionne, mais on n'a jamais envoyé d'ENQ valide, ce qui explique le silence de `ping()`.
+>
+> À noter aussi : la boucle **draine l'écho après chaque paire** (`bsr raus` lit et jette le registre de réception). La machine échoie, c'est attendu, et le pilote de référence s'en débarrasse au fur et à mesure plutôt que de le vérifier.
 
 En ONLINE, les réglages faits au clavier de la machine (interligne, pas, force de frappe) et affichés par ses LED **sont sans effet** : tout vient de l'hôte.
 
-## Machine → hôte
+## Machine → hôte : deux codes, et rien d'autre
 
-`01H` = **code de la touche ONL**. C'est l'unique déclencheur : la machine l'émet quand l'utilisateur presse ON LINE, et c'est à l'hôte de répondre par la séquence d'init. La machine « ne réagit par principe qu'à des instructions venues de l'extérieur » — d'où le sens du handshake établi dans le journal.
+La liaison doit être bidirectionnelle parce que « la machine doit aussi envoyer diverses **notifications** à l'ordinateur (par exemple : la touche ON LINE a été pressée) ». Notifications, pas frappes.
 
-Le retour OFFLINE depuis le clavier existe aussi, par combinaison de touches variable selon le modèle (`CE` sur SE 325).
+| Code | Sens |
+|---|---|
+| `01H` | **touche ONL pressée** — demande de passage ONLINE |
+| `02H` | **touche OFFLINE pressée** — demande de retour OFFLINE |
+
+La routine d'interruption du pilote de référence, qui traite *tout* ce qui arrive de la machine, ne décode que ces deux valeurs et ignore le reste :
+
+```asm
+em_int:  bsr lesen          ; lire le caractere recu
+         cmp.b #1,d5        ; touche Online pressee ?
+         bne nionline
+         ...  bsr online
+nionline:
+         cmp.b #2,d5        ; touche Offline pressee ?
+         bne ni_line
+         ...  bsr offline
+ni_line: ; ni l'un ni l'autre -> deux octets muets, rien de plus
+```
+
+**Le clavier n'est donc pas transmissible, par conception.** En ONLINE, « la saisie au clavier de la machine n'est plus possible » ; en OFFLINE, la machine est une machine à écrire et n'émet que ces codes de touche. La voie retour ne porte que ces deux notifications et les échos de commandes. Cela confirme le test négatif du journal (`listen()` sur lien fiable) : **le projet « terminal » est impossible, ce n'est pas un défaut de montage.**
+
+Le retour OFFLINE depuis le clavier se fait par une combinaison variable selon le modèle (`CE` sur SE 325, `MOD+ONL` sur les anciennes Gabriele 9009).
+
+Sur l'**ENQ** (`A4 00`), l'article annonce que « la machine doit signaler son état », mais ne documente aucun format de réponse — et le pilote de référence, lui, **ne lit jamais de bloc de statut** : il draine l'écho et passe à la suite. À manier comme un battement de cœur incertain, pas comme une source d'information.
 
 ## Commandes d'impression
 
@@ -70,7 +107,8 @@ Le retour OFFLINE depuis le clavier existe aussi, par combinaison de touches var
 | `84 <n>` | **retour arrière** (vers la gauche) | pas de 1/120" |
 
 Drapeaux du `82` : bit 0 = `1` (toujours), bit 1 = moteur du chariot, bit 2 = moteur de la marguerite, bit 3 = moteur du ruban.
-→ `82 03` = chariot seul (= notre retour chariot), `82 0F` = les trois moteurs (reset complet), `82 01` = aucun moteur — cohérent avec le blocage constaté au journal. **`82 1F` n'est pas documenté** (bit 4 sans signification) ; utilisé une fois sans dommage, mais `0F` est la valeur juste.
+→ `82 03` = chariot seul (= notre retour chariot), `82 0F` = les trois moteurs (reset complet), `82 01` = aucun moteur — cohérent avec le blocage constaté au journal.
+→ Le bit 4 n'a pas de signification dans la table de bits, mais le pilote de référence envoie littéralement **`82 1F`** juste après l'init (`move.b #$82,d4 ... move.b #$1F,d4`). C'est donc la valeur éprouvée, pas une coquille : notre firmware a raison de l'utiliser.
 
 Pas d'écriture usuels : `120 / n` = caractères par pouce. `n = 12` → 10 cpi (Elite), `n = 10` → 12 cpi (Pica), `n = 8` → 15 cpi.
 

@@ -147,23 +147,40 @@ def send_pair(b1, b2, flow=None, timeout_ms=4000):
 
 INIT_GAP_MS = 300   # valeur de la version de reference (fiable)
 
-def online(retries=4, flow=False):
-    """VERSION DE REFERENCE (celle qui etait fiable) : envoie l'init et verifie
-    l'echo global de 0xA2. Pas de fermeture prealable (A3 bloque la machine),
-    pas de renvoi commande par commande (ce sont des transitions d'etat)."""
-    for attempt in range(1, retries + 1):
-        _flush_in()
-        # Sequence EXACTE du pilote Atari ST (ST Computer 8/1988, Gabriele 9009) :
-        #     onl_tab : $A1, $A4, $A2, 0
-        # => QUATRE OCTETS SIMPLES, envoyes un a un avec un delai entre chacun.
-        # PAS de $A0 (CLEAR) en tete : c'est justement la commande qui verrouille
-        # la machine et la rend sourde a la suite.
-        for b in (0xA1, 0xA4, 0xA2, 0x00):
+def _init_seq(pairs, flow):
+    """Emet la sequence d'init.
+
+    pairs=True  : la forme du pilote de reference (voir docs/protocole-ifd1.md).
+        Sa boucle prend chaque octet de onl_tab ET LUI ACCOLE un 00 (le numero
+        de version), ce qui donne QUATRE PAIRES regulieres :
+            A1 00, A4 00, A2 00, 00 00
+        Pas de A0 (CLEAR) en tete : c'est la commande qui verrouille la machine.
+    pairs=False : les 4 octets bruts A1 A4 A2 00 — ce que faisait le firmware
+        avant. Ca marche, mais le cadrage par paires du protocole les regroupe
+        en (A1,A4) + (A2,00) : l'ENQ est avale comme numero de version du START.
+        Conserve comme repli, la forme prouvee au banc le 2026-07-27."""
+    seq = ((0xA1, 0), (0xA4, 0), (0xA2, 0), (0, 0)) if pairs else \
+          ((0xA1,), (0xA4,), (0xA2,), (0x00,))
+    for cmd in seq:
+        for b in cmd:
             if flow:
                 send_byte(b, 3000)
             else:
                 _tx([b])
                 time.sleep_ms(INIT_GAP_MS)
+
+
+def online(retries=4, flow=False, pairs=True):
+    """Envoie l'init et verifie l'echo global de 0xA2. Pas de fermeture
+    prealable (A3 bloque la machine), pas de renvoi commande par commande
+    (ce sont des transitions d'etat).
+
+    pairs=True (defaut) : forme du pilote de reference, la seule qui fasse
+    reellement parvenir l'ENQ. Si elle ne repond pas, on retombe tout seul sur
+    la forme en octets bruts prouvee au banc — pour ne pas perdre l'acquis."""
+    for attempt in range(1, retries + 1):
+        _flush_in()
+        _init_seq(pairs, flow)
         time.sleep_ms(400)
         echo = uart.read() or b''
         if 0xA2 in echo:
@@ -174,9 +191,13 @@ def online(retries=4, flow=False):
             _tx([0x80, PITCH])           # pas d'ecriture
             time.sleep_ms(300)
             return True
-        print("  tentative %d : pas d'echo A2 (recu : %s)"
-              % (attempt, echo.hex(' ') if echo else 'rien'))
+        print("  tentative %d (%s) : pas d'echo A2 (recu : %s)"
+              % (attempt, "paires" if pairs else "octets bruts",
+                 echo.hex(' ') if echo else 'rien'))
         time.sleep_ms(300)
+    if pairs:
+        print("  -> repli sur la forme en octets bruts (A1 A4 A2 00)")
+        return online(retries, flow, pairs=False)
     return False
 
 def step(b1, b2, wait_ms=1200):
