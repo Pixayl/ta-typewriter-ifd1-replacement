@@ -503,7 +503,7 @@ PAGE = """<!doctype html>
 </style>
 <h1>Mots doux</h1>
 <p class="sub">Choisissez l'imprimante, écrivez, et ça sort sur le papier.
-Entourez un mot d'<code>*étoiles*</code> pour le mettre en gras.</p>
+Entourez un mot d'<code>*étoiles*</code> pour le mettre en gras.%(lien_admin)s</p>
 <form id="f">
   <div id="machines">%(machines)s</div>
   <textarea id="t" maxlength="%(max)d" placeholder="Écris quelque chose de gentil…"
@@ -651,7 +651,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._refuser_auth()
         chemin = urlparse(self.path).path
         if chemin == "/":
-            self._send(200, PAGE % {"max": MAX_LEN,
+            lien_admin = (' — <a href="/admin">administration</a>'
+                         if self._est_admin(qui) else '')
+            self._send(200, PAGE % {"max": MAX_LEN, "lien_admin": lien_admin,
                                     "machines": bloc_machines(self.printers)})
         elif chemin == "/journal":
             machines = [{"cle": cle, "nom": p.sortie.nom, "etat": p.etat,
