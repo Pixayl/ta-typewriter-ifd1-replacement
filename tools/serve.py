@@ -670,14 +670,19 @@ def bloc_machines(printers, admin):
     a cet instant -- voir do_POST)."""
     if not admin:
         return '<input type="hidden" name="cible" value="">'
+    # Meme priorite qu'a l'envoi (do_POST) : la case cochee par defaut doit
+    # etre une imprimante DISPONIBLE si possible, pas juste "la premiere
+    # configuree" -- sinon un admin qui envoie sans regarder cible l'absente.
+    dispo = [c for c, p in printers.items() if p.prete]
+    defaut = dispo[0] if dispo else next(iter(printers), None)
     out = []
-    for n, (cle, p) in enumerate(printers.items()):
+    for cle, p in printers.items():
         out.append(
             '  <label class="mach" data-cle="%s">\n'
             '    <input type="radio" name="cible" value="%s"%s>\n'
             '    <span class="nom">%s</span>\n'
             '    <span class="etat">…</span>\n'
-            '  </label>' % (cle, cle, " checked" if n == 0 else "",
+            '  </label>' % (cle, cle, " checked" if cle == defaut else "",
                             html.escape(p.sortie.nom)))
     return "\n".join(out)
 
