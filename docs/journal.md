@@ -306,3 +306,22 @@ Deux défauts constatés après remise en service sur le Pi.
 2. **Connexion machine « réussie une fois sur N ».** `run()` n'appelait `start()` **qu'une fois**, avec 60 s d'attente : passé ce délai il rendait la main, le Pico retombait au REPL, plus de session et plus aucune tentative. Il fallait donc presser ON LINE dans la bonne fenêtre après le démarrage du Pico — et, pire, `serve.py` écrivait ensuite ses messages dans le REPL. Corrigé : **boucle sans fin**, `start(timeout_s=30)` réessayé indéfiniment, l'appui sur ON LINE peut arriver des heures plus tard.
 
 Ajout au passage : `_vider_stdin()` jette les messages arrivés avant l'ouverture de la session. Sans ça, un message envoyé machine hors ligne — déjà déclaré en échec côté hôte — s'imprimait tout seul à la connexion. C'est la même surprise que l'invite tapée sur le papier, sous une autre forme.
+
+## 2026-07-27 — 🖨️ SECONDE SORTIE : la DMP 3160 en Centronics
+
+Deux imprimantes, une seule interface. `serve.py` gagne un choix de sortie derrière une classe commune `Sortie` ; la page web, la file d'attente et le journal sont inchangés.
+
+| Sortie | Chaîne | Nature |
+|---|---|---|
+| `--backend pico` (défaut) | navigateur → serveur → USB → Pico → Xerox 575 | protocole IFD1, paires d'octets, accusé DTR, index de marguerite |
+| `--backend centronics` | navigateur → serveur → `/dev/usblp0` → DMP 3160 | **ASCII brut** |
+
+Intérêt immédiat : la matricielle permet de tester **toute la chaîne** (page, file, service systemd, permissions) **sans la Xerox ni le Pico**. Ça découple enfin les deux moitiés du système qu'on a passé la journée à déboguer ensemble. Et c'était déjà au programme (« mutualisé DMP 3160 »).
+
+Détails de la sortie Centronics : détection automatique de `/dev/usblp*` puis `/dev/lp*`, encodage **cp437** (le jeu usuel des matricielles) avec repli ASCII translittéré, fin de ligne `CR LF`, trois sauts de ligne en fin de message (plutôt qu'un saut de page, qui gâcherait du papier en continu). Le balisage `*gras*` est conservé et traduit en `ESC E` / `ESC F` de la famille Epson — **non vérifié sur cette imprimante**, d'où l'option `--sans-esc` si ça sort en charabia. `pyserial` est devenu un import souple : il n'est requis que par la sortie Pico.
+
+Deux défauts trouvés par les tests, avant tout branchement :
+- **Le repli d'encodage était global** : un seul caractère hors jeu (`…`, `—`) faisait perdre les accents de toute la ligne, alors que cp437 écrit très bien `é` et `à`. Corrigé en repli **caractère par caractère**.
+- **Un périphérique débranché passait inaperçu** : la poignée de fichier restait ouverte sur l'inode disparu et les écritures se déclaraient réussies dans le vide. `ouvrir()` revalide maintenant le chemin.
+
+Non-régression de la sortie Pico vérifiée dans la même passe.

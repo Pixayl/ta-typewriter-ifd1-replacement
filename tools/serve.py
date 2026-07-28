@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 """
-serve.py — petite interface web pour envoyer des mots doux a la Xerox 575.
+serve.py — petite interface web pour envoyer des mots doux, sur deux imprimantes.
 
-Architecture :   navigateur  ->  ce serveur  ->  USB  ->  Pico (IFD-2)  ->  machine
+DEUX SORTIES, une seule page web (file d'attente, journal et interface communs) :
 
-Cote Pico, ifd2.run() doit tourner : il lit une ligne sur l'USB et l'imprime.
-    mpremote fs cp pico/main.py :ifd2.py soft-reset exec "import ifd2; ifd2.run()"
-puis presser ON LINE sur la machine quand run() le demande.
+  --backend pico        Xerox 575 via le Pico (IFD-2), protocole IFD1
+      navigateur -> ce serveur -> USB -> Pico -> machine a ecrire
+      Cote Pico, ifd2.run() doit tourner (deploye en main.py, voir
+      pico/server_boot.py), et il faut presser ON LINE sur la machine.
+      /!\ le port serie ne se partage pas : aucune session mpremote en cours.
 
-Puis, ici :
-    ./tools/serve.py --port /dev/tty.usbmodem1101
-    ./tools/serve.py --port /dev/ttyACM0 --host 0.0.0.0     # visible sur le reseau local
+  --backend centronics  Amstrad DMP 3160 sur adaptateur USB <-> Centronics
+      navigateur -> ce serveur -> /dev/usblp0 -> matricielle
+      Beaucoup plus simple : de l'ASCII brut, ni protocole a deux octets, ni
+      accuse DTR, ni index de marguerite. Utile aussi pour tester toute la
+      chaine (page, file, service) sans la Xerox ni le Pico.
+
+Exemples :
+    ./tools/serve.py                                   # Xerox, port detecte
+    ./tools/serve.py --backend centronics              # DMP, /dev/usblp0 detecte
+    ./tools/serve.py --backend centronics --sans-esc   # si le gras sort en charabia
+    ./tools/serve.py --host 0.0.0.0                    # visible sur le reseau local
 
 Le serveur n'ecoute que sur 127.0.0.1 par defaut : il n'y a ni authentification
 ni limitation de debit, donc ne l'ouvrir au reseau que sur un reseau de confiance,
@@ -24,21 +34,31 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import glob
+import os
+import sys
+
+# pyserial n'est necessaire QUE pour la sortie Pico : la sortie Centronics
+# n'ecrit que dans un fichier de peripherique. Import souple, donc, pour que la
+# DMP 3160 fonctionne sur une machine sans pyserial.
 try:
     import serial
 except ImportError:
-    import os
-    import sys as _sys
-    _venv = os.path.join(os.path.dirname(os.path.dirname(
+    serial = None
+
+
+def _erreur_pyserial():
+    venv = os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "venv", "bin", "python")
-    _msg = ["pyserial manquant pour CET interpreteur :", "    %s" % _sys.executable,
-            "", "Attention : `pip` et `python3` ne pointent pas forcement sur le",
-            "meme Python. Installer avec l'interpreteur qui execute le script :",
-            "    %s -m pip install pyserial" % _sys.executable]
-    if os.path.exists(_venv):
-        _msg += ["", "Ou plus simple, le venv du projet l'a deja :",
-                 "    %s %s" % (_venv, os.path.abspath(__file__))]
-    raise SystemExit("\n".join(_msg))
+    msg = ["pyserial manquant pour CET interpreteur :", "    %s" % sys.executable,
+           "", "Attention : `pip` et `python3` ne pointent pas forcement sur le",
+           "meme Python. Installer avec l'interpreteur qui execute le script :",
+           "    %s -m pip install pyserial" % sys.executable]
+    if os.path.exists(venv):
+        msg += ["", "Ou plus simple, le venv du projet l'a deja :",
+                "    %s %s" % (venv, os.path.abspath(__file__))]
+    return IOError("\n".join(msg))
+
 
 MAX_LEN = 500          # garde-fou : la machine tape ~1 caractere/seconde
 
@@ -46,12 +66,225 @@ MAX_LEN = 500          # garde-fou : la machine tape ~1 caractere/seconde
 def trouver_port():
     """Cherche le Pico sur le bus. Sur Mac les ports sont /dev/cu.usbmodemXXXX
     (numero variable selon la prise !), sur Linux /dev/ttyACM0."""
-    import glob
     for motif in ("/dev/cu.usbmodem*", "/dev/ttyACM*", "/dev/cu.usbserial*"):
         trouves = sorted(glob.glob(motif))
         if trouves:
             return trouves[0]
     return None
+
+
+# =============================================================== sorties papier
+# Deux imprimantes, deux mondes : la Xerox 575 parle un protocole a deux octets
+# via le Pico, la DMP 3160 avale de l'ASCII brut sur un port parallele. La file
+# d'attente, la page web et le journal sont communs ; seule cette couche change.
+
+class Sortie:
+    """Interface d'une sortie d'impression."""
+
+    nom = "?"
+
+    def disponible(self):
+        """Chemin du peripherique s'il est present, None sinon."""
+        raise NotImplementedError
+
+    def ouvrir(self):
+        raise NotImplementedError
+
+    def fermer(self):
+        pass
+
+    def imprimer(self, texte, dire):
+        """Imprime le texte. `dire(msg)` remonte l'avancement a la page."""
+        raise NotImplementedError
+
+    def absente(self):
+        return "imprimante absente"
+
+
+class SortiePico(Sortie):
+    """Xerox 575 via le Pico (IFD-2), protocole ligne OK / ERR / # bavardage."""
+
+    nom = "Xerox 575 (Pico)"
+
+    def __init__(self, port=None, baud=115200):
+        self.port, self.baud = port, baud
+        self.fixe = port is not None       # port impose, ou detecte a chaud
+        self.ser = None
+
+    def disponible(self):
+        return self.port if self.fixe else trouver_port()
+
+    def ouvrir(self):
+        if self.ser is not None:
+            return self.port
+        if serial is None:
+            raise _erreur_pyserial()
+        port = self.disponible()
+        if not port:
+            raise IOError("aucun Pico detecte")
+        self.ser = serial.Serial(port, self.baud, timeout=5)
+        self.port = port
+        time.sleep(0.5)
+        return port
+
+    def fermer(self):
+        try:
+            if self.ser is not None:
+                self.ser.close()
+        except Exception:
+            pass
+        self.ser = None
+
+    def imprimer(self, texte, dire):
+        for ligne in texte.split('\n'):
+            # vider ce qui traine : un vieux bavardage du Pico lu comme accuse
+            # ferait croire a une impression terminee.
+            self.ser.reset_input_buffer()
+            self.ser.write((ligne + '\n').encode('utf-8', 'replace'))
+            self.ser.flush()
+            self._attendre_ok(ligne, dire)
+
+    def _attendre_ok(self, ligne, dire):
+        """Protocole (voir ifd2.run()) : "OK" imprime, "ERR ..." echec,
+        "# ..." bavardage humain — a remonter, pas a confondre avec un accuse.
+
+        Delai proportionnel a la longueur : la machine tape environ un caractere
+        par seconde, un timeout fixe declarerait en echec un long message en
+        train de s'imprimer tres correctement."""
+        timeout = 60 + 3 * len(ligne)
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            brute = self.ser.readline()
+            if not brute:
+                continue
+            msg = brute.decode("utf-8", "replace").strip()
+            if msg == "OK":
+                return True
+            if msg.startswith("ERR"):
+                raise IOError(msg[3:].strip() or "erreur signalee par le Pico")
+            if msg:
+                dire("Pico : %s" % msg.lstrip("# ").strip())
+        raise IOError("pas d'accuse du Pico apres %d s "
+                      "(session ouverte ? LED ON LINE allumee ?)" % timeout)
+
+    def absente(self):
+        return "imprimante absente (aucun Pico sur le bus USB)"
+
+
+# Repli ASCII pour les caracteres que la matricielle ne sait pas rendre : mieux
+# vaut un "e" qu'un point d'interrogation au milieu d'un mot doux.
+TRANSLIT = {
+    'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e', 'à': 'a', 'â': 'a', 'ä': 'a',
+    'î': 'i', 'ï': 'i', 'ô': 'o', 'ö': 'o', 'ù': 'u', 'û': 'u', 'ü': 'u',
+    'ç': 'c', 'ÿ': 'y', 'É': 'E', 'È': 'E', 'Ê': 'E', 'À': 'A', 'Ç': 'C',
+    'Ô': 'O', 'Û': 'U', 'œ': 'oe', 'Œ': 'OE', 'æ': 'ae', '’': "'",
+    '‘': "'", '“': '"', '”': '"', '–': '-', '—': '-', '…': '...', ' ': ' ',
+}
+
+
+class SortieCentronics(Sortie):
+    """Amstrad DMP 3160 (ou toute matricielle) derriere un adaptateur
+    USB <-> Centronics, qui se presente en classe imprimante : /dev/usblp0.
+
+    Bien plus simple que la Xerox : ni protocole a deux octets, ni accuse DTR,
+    ni index de marguerite — la matricielle avale de l'ASCII."""
+
+    nom = "DMP 3160 (Centronics)"
+
+    # Sequences ESC de la famille Epson, dont la DMP 3160 se reclame.
+    # NON VERIFIE sur cette imprimante : si le gras sort en charabia, lancer
+    # avec --sans-esc et le balisage sera simplement ignore.
+    GRAS_ON, GRAS_OFF = b'\x1bE', b'\x1bF'
+
+    def __init__(self, device=None, encodage="cp437", fin_ligne="\r\n",
+                 fin_message="\n\n\n", esc=True):
+        self.device = device
+        self.encodage = encodage
+        self.fin_ligne = fin_ligne
+        self.fin_message = fin_message
+        self.esc = esc
+        self.f = None
+
+    def disponible(self):
+        if self.device:
+            return self.device if os.path.exists(self.device) else None
+        for motif in ("/dev/usblp*", "/dev/lp*"):
+            trouves = sorted(glob.glob(motif))
+            if trouves:
+                return trouves[0]
+        return None
+
+    def ouvrir(self):
+        # Revalider le chemin : un adaptateur debranche laisse la poignee de
+        # fichier ouverte sur un peripherique disparu, et les ecritures partent
+        # alors dans le vide en se declarant reussies.
+        if self.f is not None:
+            if self.device and os.path.exists(self.device):
+                return self.device
+            self.fermer()
+        dev = self.disponible()
+        if not dev:
+            raise IOError("aucune imprimante parallele (%s introuvable)"
+                          % (self.device or "/dev/usblp0"))
+        # buffering=0 : un peripherique caractere n'aime pas les ecritures
+        # differees, on veut que chaque octet parte quand on l'ecrit.
+        self.f = open(dev, "wb", buffering=0)
+        self.device = dev
+        return dev
+
+    def fermer(self):
+        try:
+            if self.f is not None:
+                self.f.close()
+        except Exception:
+            pass
+        self.f = None
+
+    def _octets(self, s):
+        """Encode pour l'imprimante, en repliant CARACTERE PAR CARACTERE.
+
+        Un repli global serait dommageable : un seul caractere absent du jeu
+        (une apostrophe typographique, des points de suspension) ferait perdre
+        les accents de toute la ligne, alors que cp437 sait tres bien ecrire
+        « é » et « à »."""
+        try:
+            return s.encode(self.encodage)
+        except LookupError:              # encodage inconnu -> ASCII translitere
+            return self._translit(s)
+        except UnicodeEncodeError:
+            pass
+        out = bytearray()
+        for c in s:
+            try:
+                out += c.encode(self.encodage)
+            except UnicodeEncodeError:
+                out += self._translit(c)
+        return bytes(out)
+
+    def _translit(self, s):
+        return ''.join(TRANSLIT.get(c, c) for c in s).encode("ascii", "replace")
+
+    def imprimer(self, texte, dire):
+        dire("impression en cours (%s)" % self.device)
+        sortie = bytearray()
+        for ligne in texte.split('\n'):
+            if self.esc:
+                # meme balisage que la Xerox : *entoure d'etoiles* = gras
+                for n, morceau in enumerate(ligne.split('*')):
+                    if n % 2:
+                        sortie += self.GRAS_ON + self._octets(morceau) + self.GRAS_OFF
+                    else:
+                        sortie += self._octets(morceau)
+            else:
+                sortie += self._octets(ligne.replace('*', ''))
+            sortie += self._octets(self.fin_ligne)
+        sortie += self._octets(self.fin_message)
+        self.f.write(bytes(sortie))
+        self.f.flush()
+
+    def absente(self):
+        return ("imprimante absente (%s introuvable — adaptateur branche ? "
+                "module usblp charge ?)" % (self.device or "/dev/usblp0"))
 
 
 # --------------------------------------------------------------- file d'attente
@@ -68,40 +301,27 @@ class Printer(threading.Thread):
     ESSAIS = 3             # tentatives d'ouverture du port par message
     ATTENTE = 3            # secondes entre deux tentatives
 
-    def __init__(self, port=None, baud=115200):
+    def __init__(self, sortie):
         super().__init__()
         self.q = queue.Queue()
-        self.port, self.baud = port, baud
-        self.fixe = port is not None       # port impose ou detecte a chaud
+        self.sortie = sortie
         self.log = []                      # derniers messages, pour la page
-        self.ser = None
         self.etat = "imprimante : recherche..."
 
     def submit(self, text):
         self.q.put(text)
         return self.q.qsize()
 
-    def _ouvrir(self):
-        """Ouvre le port, en le redetectant si besoin (le numero change d'une
-        prise a l'autre, et le Pico peut avoir ete rebranche)."""
-        if self.ser is not None:
-            return True
-        port = self.port if self.fixe else trouver_port()
-        if not port:
-            self.etat = "imprimante absente (aucun Pico sur le bus USB)"
-            return False
-        self.ser = serial.Serial(port, self.baud, timeout=5)
-        self.port = port
-        time.sleep(0.5)
-        self.etat = "imprimante prete (%s)" % port
-        return True
+    def _dire(self, msg):
+        self.etat = msg
 
     def veiller(self):
         """Tient l'etat a jour meme quand personne n'imprime, pour que la page
         dise la verite au lieu de rester sur un vieux message."""
         while True:
-            if self.ser is None and not self.fixe and trouver_port() is None:
-                self.etat = "imprimante absente (aucun Pico sur le bus USB)"
+            if self.sortie.disponible() is None:
+                self.sortie.fermer()
+                self.etat = self.sortie.absente()
             time.sleep(5)
 
     def run(self):
@@ -110,61 +330,18 @@ class Printer(threading.Thread):
             text = self.q.get()
             for essai in range(1, self.ESSAIS + 1):
                 try:
-                    if not self._ouvrir():
-                        raise IOError("aucun Pico detecte")
-                    for line in text.split('\n'):
-                        # vider ce qui traine : un vieux bavardage du Pico lu
-                        # comme accuse ferait croire a une impression finie.
-                        self.ser.reset_input_buffer()
-                        self.ser.write((line + '\n').encode('utf-8', 'replace'))
-                        self.ser.flush()
-                        # le Pico repond "OK" quand la ligne est sur le papier
-                        self._wait_ok(line)
+                    ou = self.sortie.ouvrir()
+                    self.sortie.imprimer(text, self._dire)
                     self._note(text, "imprime")
-                    self.etat = "imprimante prete (%s)" % self.port
+                    self.etat = "%s prete (%s)" % (self.sortie.nom, ou)
                     break
-                except Exception as e:                  # lien coupe, Pico absent
-                    self._fermer()
+                except Exception as e:                  # lien coupe, absente
+                    self.sortie.fermer()
                     self.etat = "imprimante injoignable : %s" % e
                     if essai == self.ESSAIS:
                         self._note(text, "ECHEC : %s" % e)
                     else:
                         time.sleep(self.ATTENTE)
-
-    def _fermer(self):
-        try:
-            if self.ser is not None:
-                self.ser.close()
-        except Exception:
-            pass
-        self.ser = None
-
-    def _wait_ok(self, ligne=""):
-        """Attend l'accuse du Pico.
-
-        Protocole (voir ifd2.run()) : "OK" = imprime, "ERR ..." = echec,
-        "# ..." = bavardage humain, qu'on remonte a la page sans le confondre
-        avec un accuse. Toute autre ligne est traitee comme du bavardage.
-
-        Le delai est proportionnel a la longueur : la machine tape environ un
-        caractere par seconde, donc un timeout fixe declarerait en echec un
-        long message en train de s'imprimer tres correctement."""
-        timeout = 60 + 3 * len(ligne)
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            brute = self.ser.readline()
-            if not brute:
-                continue
-            msg = brute.decode("utf-8", "replace").strip()
-            if msg == "OK":
-                return True
-            if msg.startswith("ERR"):
-                raise IOError(msg[3:].strip() or "erreur signalee par le Pico")
-            if msg:
-                # avancement : utile surtout pour "presser ON LINE"
-                self.etat = "Pico : %s" % msg.lstrip("# ").strip()
-        raise IOError("pas d'accuse du Pico apres %d s "
-                      "(session ouverte ? LED ON LINE allumee ?)" % timeout)
 
     def _note(self, text, etat):
         self.log.insert(0, {"quand": time.strftime("%H:%M:%S"),
@@ -277,33 +454,61 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--port", help="port serie du Pico (detecte tout seul "
-                                   "si omis)")
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--backend", choices=("pico", "centronics"), default="pico",
+                    help="pico = Xerox 575 via le Pico (defaut) ; "
+                         "centronics = matricielle DMP 3160 sur port parallele")
+    ap.add_argument("--port", help="sortie pico : port serie du Pico "
+                                   "(detecte tout seul si omis)")
     ap.add_argument("--baud", type=int, default=115200)
+    ap.add_argument("--device", help="sortie centronics : peripherique "
+                                    "(detecte /dev/usblp* si omis)")
+    ap.add_argument("--encodage", default="cp437",
+                    help="sortie centronics : jeu de caracteres de "
+                         "l'imprimante (defaut cp437 ; repli en ASCII "
+                         "translitere si l'encodage echoue)")
+    ap.add_argument("--sans-esc", action="store_true",
+                    help="sortie centronics : n'envoyer aucune sequence ESC "
+                         "(a utiliser si le gras sort en charabia)")
     ap.add_argument("--host", default="127.0.0.1",
                     help="127.0.0.1 (defaut) ou 0.0.0.0 pour le reseau local")
     ap.add_argument("--http-port", type=int, default=8575)
     a = ap.parse_args()
 
-    # On NE sort PAS si le Pico est absent : la page doit rester accessible,
-    # c'est justement la qu'on en a besoin pour comprendre pourquoi.
-    detecte = a.port or trouver_port()
-    if detecte:
-        print("Pico : %s" % detecte)
+    if a.backend == "centronics":
+        sortie = SortieCentronics(a.device, encodage=a.encodage,
+                                  esc=not a.sans_esc)
     else:
-        print("Pico : absent pour l'instant — la page fonctionne, l'impression")
-        print("       reprendra des qu'il sera branche. Verifier que :")
-        print("       - il est sur le port USB de donnees (celui du MILIEU sur un Zero W)")
-        print("       - aucune session mpremote ne tient le port (exclusivite)")
+        sortie = SortiePico(a.port, a.baud)
 
-    Handler.printer = Printer(a.port, a.baud)
+    # On NE sort PAS si l'imprimante est absente : la page doit rester
+    # accessible, c'est justement la qu'on en a besoin pour comprendre pourquoi.
+    detecte = sortie.disponible()
+    if detecte:
+        print("%s : %s" % (sortie.nom, detecte))
+    else:
+        print("%s : absente pour l'instant — la page fonctionne, l'impression"
+              % sortie.nom)
+        print("    reprendra des qu'elle sera branchee. Verifier que :")
+        if a.backend == "pico":
+            print("    - le Pico est sur le port USB de donnees "
+                  "(celui du MILIEU sur un Zero W)")
+            print("    - aucune session mpremote ne tient le port (exclusivite)")
+        else:
+            print("    - l'adaptateur USB<->Centronics est branche")
+            print("    - /dev/usblp0 existe (`lsusb`, `dmesg | tail`, "
+                  "`sudo modprobe usblp`)")
+            print("    - l'utilisateur a le droit d'y ecrire (groupe lp)")
+
+    Handler.printer = Printer(sortie)
     Handler.printer.start()
 
     srv = ThreadingHTTPServer((a.host, a.http_port), Handler)
-    print("Mots doux : http://%s:%d/   (Pico sur %s)"
+    print("Mots doux : http://%s:%d/   (sortie : %s)"
           % ("localhost" if a.host == "127.0.0.1" else a.host,
-             a.http_port, a.port))
+             a.http_port, sortie.nom))
     if a.host != "127.0.0.1":
         print("/!\\ ouvert sur le reseau : aucune authentification, "
               "reseau de confiance uniquement.")
