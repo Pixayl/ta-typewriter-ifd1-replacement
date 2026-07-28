@@ -561,7 +561,7 @@ PAGE = """<!doctype html>
   }
 </style>
 <div class="feuille">
-<h1>Téléimprimeur<span class="machine-nom">Xerox 575 &middot; Hasnon</span></h1>
+<h1>Téléimprimeur<span class="machine-nom">Merde, ce con a réinventé le fax en 2026</span></h1>
 <p class="sub">%(intro)s%(lien_admin)s</p>
 <p class="solde" id="solde"></p>
 <form id="f">
