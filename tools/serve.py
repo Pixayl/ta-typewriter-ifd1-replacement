@@ -466,21 +466,39 @@ PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Mots doux — Xerox 575</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font: 16px/1.5 ui-serif, Georgia, serif; max-width: 34rem;
+  :root {
+    color-scheme: light dark;
+    --encre: #8a2f3b;              /* rouge-ruban : accent, jamais le texte courant */
+    --encre-douce: color-mix(in srgb, var(--encre) 14%%, transparent);
+    --ok: #3a7a4a; --ko: #a33d2e;  /* semantique, distincte de l'accent */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --encre: #e2919c; --ok: #6bbf7e; --ko: #e0796a; }
+  }
+  * { box-sizing: border-box; }
+  body { font: 16px/1.6 ui-serif, Georgia, serif; max-width: 34rem;
          margin: 4rem auto; padding: 0 1.5rem; }
-  h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: .2rem; }
+  h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: .01em;
+       margin-bottom: .2rem; }
+  a { color: var(--encre); text-decoration: none;
+      border-bottom: 1px solid color-mix(in srgb, var(--encre) 45%%, transparent); }
+  a:hover { border-color: var(--encre); }
   p.sub { opacity: .65; margin-top: 0; font-size: .9rem; }
-  p.solde { opacity: .65; margin: 0 0 .8rem; font-size: .85rem;
+  p.solde { display: inline-block; margin: 0 0 1.1rem; padding: .2rem .6rem;
+            font-size: .8rem; border-radius: 99px; background: var(--encre-douce);
             font-variant-numeric: tabular-nums; }
   textarea { width: 100%%; min-height: 8rem;
              font: 1em/1.4 ui-monospace, "SF Mono", "Cascadia Code",
                    Consolas, monospace;
-             padding: .8rem; border: 1px solid currentColor; border-radius: 6px;
-             background: transparent; color: inherit; box-sizing: border-box; }
-  button { font: inherit; padding: .6rem 1.4rem; margin-top: .8rem;
-           border-radius: 6px; border: 1px solid currentColor;
-           background: transparent; color: inherit; cursor: pointer; }
+             padding: .8rem; border: 1px solid color-mix(in srgb, currentColor 30%%, transparent);
+             border-radius: 8px; background: transparent; color: inherit;
+             transition: border-color .15s; }
+  textarea:focus { outline: none; border-color: var(--encre); }
+  button { font: inherit; font-weight: 600; padding: .6rem 1.5rem; margin-top: .9rem;
+           border-radius: 8px; border: 1px solid var(--encre);
+           background: transparent; color: var(--encre); cursor: pointer;
+           transition: background-color .15s, color .15s; }
+  button:hover:not(:disabled) { background: var(--encre); color: #fff; }
   button:disabled { opacity: .4; cursor: wait; }
   .compte { float: right; font-size: .85rem; opacity: .6; }
   ul { list-style: none; padding: 0; margin-top: 2.5rem;
@@ -488,15 +506,16 @@ PAGE = """<!doctype html>
   li { padding: .6rem 0; font-size: .9rem;
        border-bottom: 1px solid color-mix(in srgb, currentColor 12%%, transparent); }
   li .quand { opacity: .5; margin-right: .6rem; font-variant-numeric: tabular-nums; }
-  li .etat { float: right; opacity: .6; font-size: .8rem; }
+  li .etat { float: right; opacity: .75; font-size: .8rem; }
+  li.echec .etat { color: var(--ko); opacity: 1; }
+  li.imprime .etat { color: var(--ok); }
   #machines { display: flex; flex-direction: column; gap: .5rem;
               margin-bottom: 1.2rem; }
   label.mach { display: flex; align-items: baseline; gap: .6rem;
-               font-size: .9rem; padding: .55rem .8rem; border-radius: 6px;
-               cursor: pointer;
+               font-size: .9rem; padding: .55rem .8rem; border-radius: 8px;
+               cursor: pointer; transition: border-color .15s, background-color .15s;
                border: 1px solid color-mix(in srgb, currentColor 25%%, transparent); }
-  label.mach:has(input:checked) { border-color: currentColor;
-               background: color-mix(in srgb, currentColor 7%%, transparent); }
+  label.mach:has(input:checked) { border-color: var(--encre); background: var(--encre-douce); }
   label.mach.absente { border-style: dashed; opacity: .6; }
   label.mach .nom { font-weight: 600; }
   label.mach .etat { font-size: .8rem; opacity: .7; margin-left: auto;
@@ -504,8 +523,7 @@ PAGE = """<!doctype html>
   li .machine { opacity: .45; font-size: .75rem; margin-left: .5rem; }
 </style>
 <h1>Mots doux</h1>
-<p class="sub">%(intro)s
-Entourez un mot d'<code>*étoiles*</code> pour le mettre en gras.%(lien_admin)s</p>
+<p class="sub">%(intro)s%(lien_admin)s</p>
 <p class="solde" id="solde"></p>
 <form id="f">
   <div id="machines">%(machines)s</div>
@@ -544,7 +562,8 @@ async function rafraichir() {
   s.textContent = r.mon_solde === 'illimite' ? 'Crédits : illimités' :
     `Crédits : ${r.mon_solde} restant${r.mon_solde === 1 ? '' : 's'}`;
   j.innerHTML = r.messages.map(m =>
-    `<li><span class="quand">${m.quand}</span>${echapper(m.texte)}` +
+    `<li class="${m.etat.startsWith('ECHEC') ? 'echec' : 'imprime'}">` +
+    `<span class="quand">${m.quand}</span>${echapper(m.texte)}` +
     `<span class="machine">${echapper(m.machine)} — ${echapper(m.qui || '?')}</span>` +
     `<span class="etat">${echapper(m.etat)}</span></li>`).join('');
 }
@@ -558,16 +577,23 @@ PAGE_ADMIN = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Comptes — Mots doux</title>
 <style>
+  :root { color-scheme: light dark; --encre: #8a2f3b; }
+  @media (prefers-color-scheme: dark) { :root { --encre: #e2919c; } }
   body { font: 16px/1.5 ui-serif, Georgia, serif; max-width: 30rem;
          margin: 4rem auto; padding: 0 1.5rem; }
-  h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 1rem; }
+  h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: .01em;
+       margin-bottom: 1rem; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: .4rem .3rem; border-bottom: 1px solid #8883; }
+  th, td { text-align: left; padding: .5rem .3rem;
+           border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
   td.solde { font-variant-numeric: tabular-nums; text-align: right; }
-  button { font: inherit; padding: .1rem .6rem; margin: 0 .15rem;
-           border-radius: 5px; border: 1px solid currentColor;
-           background: transparent; color: inherit; cursor: pointer; }
-  a { color: inherit; }
+  button { font: inherit; padding: .15rem .6rem; margin: 0 .15rem;
+           border-radius: 6px; border: 1px solid var(--encre);
+           background: transparent; color: var(--encre); cursor: pointer;
+           transition: background-color .15s, color .15s; }
+  button:hover { background: var(--encre); color: #fff; }
+  a { color: var(--encre); text-decoration: none;
+      border-bottom: 1px solid color-mix(in srgb, var(--encre) 45%, transparent); }
 </style>
 <h1>Comptes</h1>
 <p><a href="/">← retour</a></p>
@@ -598,11 +624,11 @@ rafraichir();
 def bloc_machines(printers, admin):
     """Boutons radio des imprimantes, avec etat en direct -- reserve aux
     administrateurs (on ne montre pas a un ami quelles machines physiques
-    existent ni leur etat). Pour les autres, une cible fixe et invisible :
-    la premiere imprimante configuree (ordre de --machines)."""
+    existent ni leur etat). Pour les autres : un champ cache vide, le serveur
+    choisit lui-meme la cible a l'envoi (priorite a une imprimante DISPONIBLE
+    a cet instant -- voir do_POST)."""
     if not admin:
-        cle = next(iter(printers), "")
-        return '<input type="hidden" name="cible" value="%s">' % html.escape(cle)
+        return '<input type="hidden" name="cible" value="">'
     out = []
     for n, (cle, p) in enumerate(printers.items()):
         out.append(
@@ -725,9 +751,15 @@ class Handler(BaseHTTPRequestHandler):
 
         if u.path != "/print":
             return self._send(404, "rien ici")
-        cible = (parse_qs(u.query).get("cible") or [None])[0]
-        if cible is None:                       # compatibilite : premiere machine
-            cible = next(iter(self.printers), None)
+        demandee = (parse_qs(u.query).get("cible") or [None])[0]
+        if self._est_admin(qui) and demandee in self.printers:
+            cible = demandee                    # choix explicite, respecte tel quel
+        else:
+            # priorite a une imprimante DISPONIBLE maintenant ; sinon la
+            # premiere configuree (le message se met en file et affichera
+            # clairement qu'elle est injoignable, plutot que de se perdre).
+            dispo = [c for c, pr in self.printers.items() if pr.prete]
+            cible = dispo[0] if dispo else next(iter(self.printers), None)
         p = self.printers.get(cible)
         if p is None:
             return self._send(400, "imprimante inconnue : %s" % html.escape(
