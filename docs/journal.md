@@ -360,3 +360,9 @@ Lecture importante : l'imprimante n'a pas *ignoré* la séquence — elle a **av
 - Nouvel outil **`tools/dmp_probe.py`** : essaie une famille de séquences à la fois — gras, souligné, pas d'écriture, accents — **chacune sur sa propre ligne étiquetée**, avec un `ESC @` de réinitialisation entre chaque. La méthode de lecture est le point clé : l'étiquette part *seule et en clair* avant l'essai, donc « étiquette visible + essai absent » identifie précisément une séquence qui avale la suite, et « étiquette absente » signale l'essai qui a bloqué l'imprimante.
 
 À faire quand tu voudras du gras : `sudo ./tools/dmp_probe.py --seulement gras`, lire le papier, puis lancer `serve.py --gras <ce qui marche>`.
+
+## 2026-07-28 — Tailscale Funnel + auth par ami : déploiement
+
+Mise en place complète : `serve.py --credentials --host 127.0.0.1` + `sudo tailscale funnel 8575` (mode premier plan — nécessite de garder le terminal SSH ouvert, `Ctrl+C` pour arrêter ; `tailscale funnel status` pour vérifier l'état sans le relancer).
+Authentification HTTP Basic par ami (`credentials.json`, hors dépôt), soldes de crédits gérés par un compte admin via `/admin` (voir commits « HTTP Basic Auth… » et « admin-managed credit balances »).
+**Piège trouvé** : Firefox sur iOS échoue à se connecter (`NSURLErrorDomain`, erreur TLS) sur l'URL Funnel, alors que Safari sur le même iPhone/même réseau fonctionne sans problème. Cause probable *(je pense)* : le DNS-over-HTTPS propre à Firefox (résolveur externe, souvent Cloudflare) résout ou filtre différemment un nom d'hôte `.ts.net` fraîchement créé. Écarté : Relais Privé iCloud (déjà désactivé), Wi-Fi vs 5G (même échec sur les deux — donc pas l'opérateur), date/heure. Correctif si besoin : Firefox iOS → Réglages → DNS over HTTPS → Désactivé.
