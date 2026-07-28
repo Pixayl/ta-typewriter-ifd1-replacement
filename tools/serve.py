@@ -13,7 +13,7 @@ elles peuvent travailler en meme temps ; le journal des messages est commun.
       /!\ le port serie ne se partage pas : aucune session mpremote en cours.
 
   dmp     Amstrad DMP 3160 sur adaptateur USB <-> Centronics
-      navigateur -> ce serveur -> /dev/usblp0 -> matricielle
+      navigateur -> ce serveur -> /dev/usb/lp0 -> matricielle
       Beaucoup plus simple : de l'ASCII brut, ni protocole a deux octets, ni
       accuse DTR, ni index de marguerite. Utile aussi pour tester toute la
       chaine (page, file, service) sans la Xerox ni le Pico.
@@ -187,7 +187,7 @@ TRANSLIT = {
 
 class SortieCentronics(Sortie):
     """Amstrad DMP 3160 (ou toute matricielle) derriere un adaptateur
-    USB <-> Centronics, qui se presente en classe imprimante : /dev/usblp0.
+    USB <-> Centronics, qui se presente en classe imprimante.
 
     Bien plus simple que la Xerox : ni protocole a deux octets, ni accuse DTR,
     ni index de marguerite — la matricielle avale de l'ASCII."""
@@ -211,7 +211,11 @@ class SortieCentronics(Sortie):
     def disponible(self):
         if self.device:
             return self.device if os.path.exists(self.device) else None
-        for motif in ("/dev/usblp*", "/dev/lp*"):
+        # /!\ Sur Debian et Raspberry Pi OS, usblp cree son noeud dans un
+        # SOUS-REPERTOIRE : /dev/usb/lp0. Le "usblp0" annonce par dmesg est le
+        # nom du pilote, pas le chemin du fichier. D'autres distributions
+        # utilisent /dev/usblp0, et le port parallele physique /dev/lp0.
+        for motif in ("/dev/usb/lp*", "/dev/usblp*", "/dev/lp*"):
             trouves = sorted(glob.glob(motif))
             if trouves:
                 return trouves[0]
@@ -228,7 +232,7 @@ class SortieCentronics(Sortie):
         dev = self.disponible()
         if not dev:
             raise IOError("aucune imprimante parallele (%s introuvable)"
-                          % (self.device or "/dev/usblp0"))
+                          % (self.device or "/dev/usb/lp0"))
         # buffering=0 : un peripherique caractere n'aime pas les ecritures
         # differees, on veut que chaque octet parte quand on l'ecrit.
         self.f = open(dev, "wb", buffering=0)
@@ -287,7 +291,7 @@ class SortieCentronics(Sortie):
 
     def absente(self):
         return ("imprimante absente (%s introuvable — adaptateur branche ? "
-                "module usblp charge ?)" % (self.device or "/dev/usblp0"))
+                "module usblp charge ?)" % (self.device or "/dev/usb/lp0"))
 
 
 # --------------------------------------------------------------- file d'attente
@@ -529,7 +533,7 @@ def main():
                                    "(detecte tout seul si omis)")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--device", help="sortie centronics : peripherique "
-                                    "(detecte /dev/usblp* si omis)")
+                                    "(detecte /dev/usb/lp* si omis)")
     ap.add_argument("--encodage", default="cp437",
                     help="sortie centronics : jeu de caracteres de "
                          "l'imprimante (defaut cp437 ; repli en ASCII "
@@ -577,7 +581,7 @@ def main():
                   "(exclusivite)")
         else:
             print("       - l'adaptateur USB<->Centronics est-il branche ?")
-            print("       - /dev/usblp0 existe-t-il ? (`lsusb`, `dmesg | tail`, "
+            print("       - /dev/usb/lp0 existe-t-il ? (`lsusb`, `dmesg | tail`, "
                   "`sudo modprobe usblp`)")
             print("       - l'utilisateur a-t-il le droit d'y ecrire "
                   "(groupe lp) ?")

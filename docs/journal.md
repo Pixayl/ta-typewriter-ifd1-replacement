@@ -337,3 +337,13 @@ Le drapeau `--backend` a disparu au profit de quelque chose de mieux : **les deu
 - `POST /print?cible=xerox|dmp` ; `--machines xerox,dmp` (les deux par défaut) permet de n'en proposer qu'une.
 
 Vérifié hors matériel : rendu des deux boutons, envoi vers chaque cible, octets réellement émis de chaque côté (`ESC E`/`ESC F` et cp437 pour la DMP, protocole ligne pour le Pico), étiquetage du journal, cible inconnue rejetée en 400, nom d'imprimante invalide refusé au lancement.
+
+### Piège : `usblp0` (nom du pilote) ≠ `/dev/usblp0` (chemin du fichier)
+
+L'adaptateur USB↔Centronics (un CH340S annoncé « USB2.0-Print ») est parfaitement reconnu :
+```
+usblp 1-1:1.0: usblp0: USB Bidirectional printer dev 2 if 0 alt 1 proto 2 vid 0x1A86 pid 0x7584
+```
+Mais `ls /dev/usblp*` ne trouvait rien, et la page affichait « absente ». Cause : **sur Debian et Raspberry Pi OS, `usblp` crée son nœud dans un sous-répertoire — `/dev/usb/lp0`.** Le `usblp0` qu'annonce `dmesg` est le nom du *pilote*, pas le chemin du fichier ; d'autres distributions utilisent bien `/dev/usblp0`. La détection cherche maintenant, dans l'ordre : `/dev/usb/lp*`, `/dev/usblp*`, puis `/dev/lp*` (port parallèle physique).
+
+Leçon transposable : un nom qui apparaît dans un message noyau n'est pas nécessairement un chemin. Vérifier avec `ls /dev` plutôt que de le déduire.
