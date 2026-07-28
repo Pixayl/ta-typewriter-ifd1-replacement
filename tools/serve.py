@@ -36,7 +36,6 @@ import json
 import queue
 import threading
 import time
-from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -68,38 +67,63 @@ def _erreur_pyserial():
 
 # ------------------------------------------------------------ authentification
 def charger_identifiants(chemin):
-    """Charge {utilisateur: mot_de_passe} depuis un JSON. Fichier VOLONTAIREMENT
-    hors du depot (voir .gitignore) : jamais de mot de passe commite."""
+    """Charge les comptes depuis un JSON, format par utilisateur :
+        {"ami": {"mot_de_passe": "...", "credits": 20, "admin": false}, ...}
+    "credits": null => illimite (typiquement pour un compte admin).
+    Fichier VOLONTAIREMENT hors du depot (voir .gitignore) : jamais de mot de
+    passe commite."""
     if not chemin or not os.path.exists(chemin):
         return None
     with open(chemin, encoding="utf-8") as f:
-        creds = json.load(f)
-    if not isinstance(creds, dict) or not creds:
-        raise SystemExit("credentials : JSON attendu {\"ami\": \"mot de passe\", ...}")
-    return creds
+        brut = json.load(f)
+    if not isinstance(brut, dict) or not brut:
+        raise SystemExit(
+            "credentials : JSON attendu {\"ami\": {\"mot_de_passe\": \"...\", "
+            "\"credits\": 20, \"admin\": false}, ...} (voir "
+            "tools/credentials.json.example)")
+    comptes = {}
+    for u, v in brut.items():
+        if not isinstance(v, dict) or "mot_de_passe" not in v:
+            raise SystemExit("credentials : l'entree %r doit etre un objet "
+                             "avec au moins \"mot_de_passe\"" % u)
+        comptes[u] = {"mot_de_passe": v["mot_de_passe"],
+                      "credits": v.get("credits", 0),
+                      "admin": bool(v.get("admin", False))}
+    return comptes
 
 
-class LimiteDebit:
-    """Fenetre glissante par utilisateur : proteger le papier/ruban d'un ami
-    trop enthousiaste (ou d'un identifiant compromis), pas une securite forte."""
+class Credits:
+    """Solde de credits par utilisateur, gere a la main par un admin -- pas
+    une fenetre glissante automatique : proteger le papier/ruban d'un ami trop
+    enthousiaste, et savoir qui a envoye quoi, avec un vrai humain aux
+    commandes plutot qu'une limite arbitraire par heure."""
 
-    def __init__(self, max_par_heure):
-        self.max = max_par_heure
-        self.horodatages = defaultdict(deque)
+    def __init__(self, comptes):
+        self.solde = {u: c["credits"] for u, c in comptes.items()}
+        self.admins = {u for u, c in comptes.items() if c["admin"]}
         self.verrou = threading.Lock()
 
-    def autorise(self, qui):
-        if not self.max:
+    def illimite(self, qui):
+        return qui in self.admins or self.solde.get(qui) is None
+
+    def depenser(self, qui):
+        """True si le message peut partir (et decrement le solde)."""
+        if self.illimite(qui):
             return True
-        now = time.time()
         with self.verrou:
-            q = self.horodatages[qui]
-            while q and now - q[0] > 3600:
-                q.popleft()
-            if len(q) >= self.max:
+            if self.solde.get(qui, 0) <= 0:
                 return False
-            q.append(now)
+            self.solde[qui] -= 1
             return True
+
+    def ajuster(self, qui, delta):
+        with self.verrou:
+            self.solde[qui] = self.solde.get(qui, 0) + delta
+
+    def etat(self):
+        with self.verrou:
+            return {u: ("illimite" if self.illimite(u) else s)
+                    for u, s in self.solde.items()}
 
 
 MAX_LEN = 500          # garde-fou : la machine tape ~1 caractere/seconde
@@ -522,6 +546,48 @@ rafraichir(); setInterval(rafraichir, 4000);
 </html>"""
 
 
+PAGE_ADMIN = """<!doctype html>
+<html lang="fr"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Comptes — Mots doux</title>
+<style>
+  body { font: 16px/1.5 ui-serif, Georgia, serif; max-width: 30rem;
+         margin: 4rem auto; padding: 0 1.5rem; }
+  h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 1rem; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: .4rem .3rem; border-bottom: 1px solid #8883; }
+  td.solde { font-variant-numeric: tabular-nums; text-align: right; }
+  button { font: inherit; padding: .1rem .6rem; margin: 0 .15rem;
+           border-radius: 5px; border: 1px solid currentColor;
+           background: transparent; color: inherit; cursor: pointer; }
+  a { color: inherit; }
+</style>
+<h1>Comptes</h1>
+<p><a href="/">← retour</a></p>
+<table><thead><tr><th>Utilisateur</th><th>Solde</th><th></th></tr></thead>
+<tbody id="lignes"></tbody></table>
+<script>
+async function ajuster(qui, delta) {
+  await fetch('/admin/credit?qui=' + encodeURIComponent(qui) + '&delta=' + delta,
+              {method: 'POST'});
+  rafraichir();
+}
+async function rafraichir() {
+  const soldes = await (await fetch('/admin/soldes')).json();
+  document.getElementById('lignes').innerHTML = Object.entries(soldes).map(
+    ([qui, solde]) => `<tr><td>${qui}</td><td class="solde">${solde}</td><td>` +
+      (solde === 'illimite' ? '' :
+        `<button onclick="ajuster('${qui}',-5)">−5</button>` +
+        `<button onclick="ajuster('${qui}',-1)">−1</button>` +
+        `<button onclick="ajuster('${qui}',1)">+1</button>` +
+        `<button onclick="ajuster('${qui}',5)">+5</button>`) +
+      `</td></tr>`).join('');
+}
+rafraichir();
+</script>
+</html>"""
+
+
 def bloc_machines(printers):
     """Boutons radio des imprimantes, rendus cote serveur. Leur etat est ensuite
     rafraichi en place par la page, sans la recharger."""
@@ -541,7 +607,7 @@ class Handler(BaseHTTPRequestHandler):
     printers = {}          # cle -> Printer
     journal = []           # liste partagee
     identifiants = None     # {utilisateur: mot_de_passe}, ou None = pas d'auth
-    debit = None             # LimiteDebit, ou None = pas de limite
+    credits = None            # instance de Credits, ou None = pas de limite
 
     def _send(self, code, body, ctype="text/html; charset=utf-8"):
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -564,8 +630,8 @@ class Handler(BaseHTTPRequestHandler):
             u, p = base64.b64decode(entete[6:]).decode("utf-8").split(":", 1)
         except Exception:
             return None
-        attendu = self.identifiants.get(u)
-        if attendu is not None and hmac.compare_digest(p, attendu):
+        compte = self.identifiants.get(u)
+        if compte is not None and hmac.compare_digest(p, compte["mot_de_passe"]):
             return u
         return None
 
@@ -575,8 +641,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _est_admin(self, qui):
+        return (self.identifiants is not None
+                and self.identifiants.get(qui, {}).get("admin", False))
+
     def do_GET(self):
-        if self._qui() is None:
+        qui = self._qui()
+        if qui is None:
             return self._refuser_auth()
         chemin = urlparse(self.path).path
         if chemin == "/":
@@ -589,6 +660,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"machines": machines,
                                         "messages": self.journal}),
                        "application/json; charset=utf-8")
+        elif chemin == "/admin":
+            if not self._est_admin(qui):
+                return self._send(403, "reserve aux administrateurs")
+            self._send(200, PAGE_ADMIN)
+        elif chemin == "/admin/soldes":
+            if not self._est_admin(qui):
+                return self._send(403, "reserve aux administrateurs")
+            soldes = self.credits.etat() if self.credits else {}
+            self._send(200, json.dumps(soldes),
+                       "application/json; charset=utf-8")
         else:
             self._send(404, "rien ici")
 
@@ -597,6 +678,25 @@ class Handler(BaseHTTPRequestHandler):
         if qui is None:
             return self._refuser_auth()
         u = urlparse(self.path)
+
+        if u.path == "/admin/credit":
+            if not self._est_admin(qui):
+                return self._send(403, "reserve aux administrateurs")
+            q = parse_qs(u.query)
+            cible_compte = (q.get("qui") or [None])[0]
+            try:
+                delta = int((q.get("delta") or ["0"])[0])
+            except ValueError:
+                return self._send(400, "delta invalide")
+            if cible_compte not in (self.identifiants or {}):
+                return self._send(400, "compte inconnu : %s"
+                                  % html.escape(str(cible_compte)))
+            self.credits.ajuster(cible_compte, delta)
+            print("  -> credits : %s ajuste de %+d par %s"
+                  % (cible_compte, delta, qui))
+            return self._send(200, json.dumps(self.credits.etat()),
+                              "application/json; charset=utf-8")
+
         if u.path != "/print":
             return self._send(404, "rien ici")
         cible = (parse_qs(u.query).get("cible") or [None])[0]
@@ -606,9 +706,9 @@ class Handler(BaseHTTPRequestHandler):
         if p is None:
             return self._send(400, "imprimante inconnue : %s" % html.escape(
                 str(cible)))
-        if self.debit is not None and not self.debit.autorise(qui):
-            return self._send(429, "trop de messages -- attends un peu avant "
-                                   "d'en renvoyer un autre")
+        if self.credits is not None and not self.credits.depenser(qui):
+            return self._send(429, "plus de credits -- demande a un "
+                                   "administrateur d'en ajouter")
         n = int(self.headers.get("Content-Length", 0))
         texte = self.rfile.read(n).decode("utf-8", "replace")[:MAX_LEN].strip()
         if not texte:
@@ -650,17 +750,15 @@ def main():
                     help="127.0.0.1 (defaut) ou 0.0.0.0 pour le reseau local")
     ap.add_argument("--http-port", type=int, default=8575)
     ap.add_argument("--credentials",
-                    help="JSON {\"ami\": \"mot de passe\", ...} pour exiger une "
-                         "authentification HTTP Basic. Fichier a garder HORS du "
-                         "depot git. OBLIGATOIRE avant d'exposer via Tailscale "
-                         "Funnel ou tout reseau non prive.")
-    ap.add_argument("--limite-horaire", type=int, default=10,
-                    help="messages max par utilisateur et par heure "
-                         "(defaut 10 ; 0 = pas de limite)")
+                    help="JSON par utilisateur (mot de passe, credits, admin) "
+                         "pour exiger une authentification HTTP Basic. Voir "
+                         "tools/credentials.json.example. Fichier a garder "
+                         "HORS du depot git. OBLIGATOIRE avant d'exposer via "
+                         "Tailscale Funnel ou tout reseau non prive.")
     a = ap.parse_args()
 
     Handler.identifiants = charger_identifiants(a.credentials)
-    Handler.debit = LimiteDebit(a.limite_horaire)
+    Handler.credits = Credits(Handler.identifiants) if Handler.identifiants else None
 
     fabriques = {
         "xerox": lambda: SortiePico(a.port, a.baud),
@@ -709,8 +807,10 @@ def main():
         print("/!\\ AUCUNE authentification (--credentials non fourni) -- "
               "ne JAMAIS exposer ainsi via Funnel ou tout reseau non prive.")
     else:
-        print("authentification : %d identifiant(s) charge(s), limite %s/h"
-              % (len(Handler.identifiants), a.limite_horaire or "illimitee"))
+        admins = [u for u, c in Handler.identifiants.items() if c["admin"]]
+        print("authentification : %d compte(s) charge(s) (%d admin : %s)"
+              % (len(Handler.identifiants), len(admins), ", ".join(admins) or "-"))
+        print("page admin : /admin")
     if a.host != "127.0.0.1":
         print("/!\\ ouvert sur le reseau (%s) — assure-toi que c'est voulu."
               % a.host)
