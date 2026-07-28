@@ -347,3 +347,16 @@ usblp 1-1:1.0: usblp0: USB Bidirectional printer dev 2 if 0 alt 1 proto 2 vid 0x
 Mais `ls /dev/usblp*` ne trouvait rien, et la page affichait « absente ». Cause : **sur Debian et Raspberry Pi OS, `usblp` crée son nœud dans un sous-répertoire — `/dev/usb/lp0`.** Le `usblp0` qu'annonce `dmesg` est le nom du *pilote*, pas le chemin du fichier ; d'autres distributions utilisent bien `/dev/usblp0`. La détection cherche maintenant, dans l'ordre : `/dev/usb/lp*`, `/dev/usblp*`, puis `/dev/lp*` (port parallèle physique).
 
 Leçon transposable : un nom qui apparaît dans un message noyau n'est pas nécessairement un chemin. Vérifier avec `ls /dev` plutôt que de le déduire.
+
+### ❌ `ESC E` / `ESC F` : la DMP 3160 n'imprime RIEN
+
+Essai : « Tu tombes bien mon \*loulou\*, j'ai remonté ma pendule » → **aucune sortie**. Le même message sans astérisques passe parfaitement.
+
+Lecture importante : l'imprimante n'a pas *ignoré* la séquence — elle a **avalé la suite de la ligne**. `ESC E` a donc bien été reconnu comme un début de séquence, mais attendait autre chose que ce qu'on envoyait. C'est plus instructif qu'un simple refus : la DMP 3160 comprend l'échappement `ESC`, mais pas ce dialecte-là. La compatibilité Epson annoncée était une supposition de ma part, jamais vérifiée — et c'est exactement la réserve que j'avais notée sans la lever.
+
+**Correctifs** :
+- **Le gras est désactivé par défaut** sur la matricielle : les astérisques sont retirées et le texte s'imprime. Un mot doux sans gras vaut mieux qu'un mot doux qui ne sort pas.
+- Option `--gras aucun|esc|double` (`double` = `ESC G`/`ESC H`, le double-frappe d'Epson, non testé).
+- Nouvel outil **`tools/dmp_probe.py`** : essaie une famille de séquences à la fois — gras, souligné, pas d'écriture, accents — **chacune sur sa propre ligne étiquetée**, avec un `ESC @` de réinitialisation entre chaque. La méthode de lecture est le point clé : l'étiquette part *seule et en clair* avant l'essai, donc « étiquette visible + essai absent » identifie précisément une séquence qui avale la suite, et « étiquette absente » signale l'essai qui a bloqué l'imprimante.
+
+À faire quand tu voudras du gras : `sudo ./tools/dmp_probe.py --seulement gras`, lire le papier, puis lancer `serve.py --gras <ce qui marche>`.

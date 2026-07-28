@@ -21,7 +21,7 @@ elles peuvent travailler en meme temps ; le journal des messages est commun.
 Exemples :
     ./tools/serve.py                        # les deux imprimantes, page au choix
     ./tools/serve.py --machines dmp         # la matricielle seule
-    ./tools/serve.py --sans-esc             # si le gras DMP sort en charabia
+    ./tools/serve.py --gras double          # essai d'un autre gras sur la DMP
     ./tools/serve.py --host 0.0.0.0         # visible sur le reseau local
 
 Le serveur n'ecoute que sur 127.0.0.1 par defaut : il n'y a ni authentification
@@ -194,18 +194,25 @@ class SortieCentronics(Sortie):
 
     nom = "DMP 3160 (Centronics)"
 
-    # Sequences ESC de la famille Epson, dont la DMP 3160 se reclame.
-    # NON VERIFIE sur cette imprimante : si le gras sort en charabia, lancer
-    # avec --sans-esc et le balisage sera simplement ignore.
-    GRAS_ON, GRAS_OFF = b'\x1bE', b'\x1bF'
+    # Plusieurs familles de sequences existent, et la DMP 3160 n'honore pas
+    # forcement celle qu'on croit. MESURE DU 2026-07-27 : avec ESC E / ESC F
+    # (Epson, "emphasized"), la ligne n'est PAS sortie du tout — l'imprimante
+    # n'a pas ignore la sequence, elle a attendu une suite qui ne venait pas et
+    # a avale le reste. Le gras est donc DESACTIVE par defaut ; utiliser
+    # tools/dmp_probe.py pour trouver ce que cette imprimante accepte.
+    GRAS = {
+        "aucun":  (b'', b''),                    # defaut : les etoiles disparaissent
+        "esc":    (b'\x1bE', b'\x1bF'),          # Epson "emphasized" — KO ici
+        "double": (b'\x1bG', b'\x1bH'),          # Epson "double-strike" — a tester
+    }
 
     def __init__(self, device=None, encodage="cp437", fin_ligne="\r\n",
-                 fin_message="\n\n\n", esc=True):
+                 fin_message="\n\n\n", gras="aucun"):
         self.device = device
         self.encodage = encodage
         self.fin_ligne = fin_ligne
         self.fin_message = fin_message
-        self.esc = esc
+        self.gras = gras if gras in self.GRAS else "aucun"
         self.f = None
 
     def disponible(self):
@@ -273,16 +280,20 @@ class SortieCentronics(Sortie):
 
     def imprimer(self, texte, dire):
         dire("impression en cours (%s)" % self.device)
+        on, off = self.GRAS[self.gras]
         sortie = bytearray()
         for ligne in texte.split('\n'):
-            if self.esc:
+            if on:
                 # meme balisage que la Xerox : *entoure d'etoiles* = gras
                 for n, morceau in enumerate(ligne.split('*')):
                     if n % 2:
-                        sortie += self.GRAS_ON + self._octets(morceau) + self.GRAS_OFF
+                        sortie += on + self._octets(morceau) + off
                     else:
                         sortie += self._octets(morceau)
             else:
+                # gras non pris en charge : on retire les etoiles, mais on
+                # imprime le texte — un mot doux qui ne sort pas est pire qu'un
+                # mot doux sans gras.
                 sortie += self._octets(ligne.replace('*', ''))
             sortie += self._octets(self.fin_ligne)
         sortie += self._octets(self.fin_message)
@@ -538,9 +549,13 @@ def main():
                     help="sortie centronics : jeu de caracteres de "
                          "l'imprimante (defaut cp437 ; repli en ASCII "
                          "translitere si l'encodage echoue)")
-    ap.add_argument("--sans-esc", action="store_true",
-                    help="sortie centronics : n'envoyer aucune sequence ESC "
-                         "(a utiliser si le gras sort en charabia)")
+    ap.add_argument("--gras", choices=("aucun", "esc", "double"),
+                    default="aucun",
+                    help="matricielle : comment rendre *le balisage gras*. "
+                         "aucun (defaut, les etoiles disparaissent), "
+                         "esc (ESC E/F — ne marche PAS sur la DMP 3160), "
+                         "double (ESC G/H, a tester). "
+                         "Voir tools/dmp_probe.py.")
     ap.add_argument("--host", default="127.0.0.1",
                     help="127.0.0.1 (defaut) ou 0.0.0.0 pour le reseau local")
     ap.add_argument("--http-port", type=int, default=8575)
@@ -549,7 +564,7 @@ def main():
     fabriques = {
         "xerox": lambda: SortiePico(a.port, a.baud),
         "dmp": lambda: SortieCentronics(a.device, encodage=a.encodage,
-                                       esc=not a.sans_esc),
+                                       gras=a.gras),
     }
     demandees = [c.strip() for c in a.machines.split(",") if c.strip()]
     inconnues = [c for c in demandees if c not in fabriques]
