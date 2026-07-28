@@ -9,3 +9,6 @@ venv/
 .DS_Store
 __pycache__/
 *.pyc
+
+# identifiants du serveur d'impression (JAMAIS dans le depot)
+credentials.json

@@ -29,11 +29,14 @@ ni limitation de debit, donc ne l'ouvrir au reseau que sur un reseau de confianc
 et jamais sur Internet.
 """
 import argparse
+import base64
+import hmac
 import html
 import json
 import queue
 import threading
 import time
+from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -61,6 +64,42 @@ def _erreur_pyserial():
         msg += ["", "Ou plus simple, le venv du projet l'a deja :",
                 "    %s %s" % (venv, os.path.abspath(__file__))]
     return IOError("\n".join(msg))
+
+
+# ------------------------------------------------------------ authentification
+def charger_identifiants(chemin):
+    """Charge {utilisateur: mot_de_passe} depuis un JSON. Fichier VOLONTAIREMENT
+    hors du depot (voir .gitignore) : jamais de mot de passe commite."""
+    if not chemin or not os.path.exists(chemin):
+        return None
+    with open(chemin, encoding="utf-8") as f:
+        creds = json.load(f)
+    if not isinstance(creds, dict) or not creds:
+        raise SystemExit("credentials : JSON attendu {\"ami\": \"mot de passe\", ...}")
+    return creds
+
+
+class LimiteDebit:
+    """Fenetre glissante par utilisateur : proteger le papier/ruban d'un ami
+    trop enthousiaste (ou d'un identifiant compromis), pas une securite forte."""
+
+    def __init__(self, max_par_heure):
+        self.max = max_par_heure
+        self.horodatages = defaultdict(deque)
+        self.verrou = threading.Lock()
+
+    def autorise(self, qui):
+        if not self.max:
+            return True
+        now = time.time()
+        with self.verrou:
+            q = self.horodatages[qui]
+            while q and now - q[0] > 3600:
+                q.popleft()
+            if len(q) >= self.max:
+                return False
+            q.append(now)
+            return True
 
 
 MAX_LEN = 500          # garde-fou : la machine tape ~1 caractere/seconde
@@ -281,7 +320,22 @@ class SortieCentronics(Sortie):
     def imprimer(self, texte, dire):
         dire("impression en cours (%s)" % self.device)
         on, off = self.GRAS[self.gras]
-        sortie = bytearray()
+        # ESC @ (reset) en tete de chaque job : sans lui, un etat residuel du
+        # job precedent (mode, buffer) peut faire "avaler" une commande valide
+        # -- c'est ce que dmp_probe.py fait deja avant chaque essai, et qui
+        # manquait ici. HYPOTHESE du 2026-07-28, a confirmer par plusieurs
+        # impressions consecutives avec --gras esc.
+        #
+        # RETIRE (2026-07-28) : ESC R 0 forçait le jeu USA pour proteger la
+        # ponctuation, mais tuait les accents (le remplacement France etait
+        # leur seul mecanisme de rendu en mode Epson FX). Le vrai fix est
+        # cote DIP switch : DS1-8 -> ON (mode IBM #2 avec DS1-7 deja ON),
+        # qui active la table cp437 pour les octets hauts ET rend le
+        # remplacement de ponctuation France caduc -- voir manuel : "pour les
+        # caracteres internationaux, DS1-8 doit etre eteint" implique l'inverse
+        # (DS1-8 allume) selectionne la table IBM/cp437 a la place. A confirmer
+        # au banc.
+        sortie = bytearray(b'\x1b@')
         for ligne in texte.split('\n'):
             if on:
                 # meme balisage que la Xerox : *entoure d'etoiles* = gras
@@ -330,8 +384,8 @@ class Printer(threading.Thread):
         self.etat = "recherche..."
         self.prete = False
 
-    def submit(self, text):
-        self.q.put(text)
+    def submit(self, text, qui="anonyme"):
+        self.q.put((text, qui))
         return self.q.qsize()
 
     def _dire(self, msg):
@@ -354,12 +408,12 @@ class Printer(threading.Thread):
     def run(self):
         threading.Thread(target=self.veiller, daemon=True).start()
         while True:
-            text = self.q.get()
+            text, qui = self.q.get()
             for essai in range(1, self.ESSAIS + 1):
                 try:
                     ou = self.sortie.ouvrir()
                     self.sortie.imprimer(text, self._dire)
-                    self._note(text, "imprime")
+                    self._note(text, "imprime", qui)
                     self.etat = "prete (%s)" % ou
                     self.prete = True
                     break
@@ -368,16 +422,16 @@ class Printer(threading.Thread):
                     self.etat = "injoignable : %s" % e
                     self.prete = False
                     if essai == self.ESSAIS:
-                        self._note(text, "ECHEC : %s" % e)
+                        self._note(text, "ECHEC : %s" % e, qui)
                     else:
                         time.sleep(self.ATTENTE)
 
-    def _note(self, text, etat):
+    def _note(self, text, etat, qui="anonyme"):
         # journal commun aux deux imprimantes : verrou obligatoire, deux fils
         # peuvent y ecrire en meme temps.
         with self.verrou:
             self.journal.insert(0, {"quand": time.strftime("%H:%M:%S"),
-                                    "texte": text, "etat": etat,
+                                    "texte": text, "etat": etat, "qui": qui,
                                     "machine": self.sortie.nom})
             del self.journal[30:]
 
@@ -393,8 +447,10 @@ PAGE = """<!doctype html>
          margin: 4rem auto; padding: 0 1.5rem; }
   h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: .2rem; }
   p.sub { opacity: .65; margin-top: 0; font-size: .9rem; }
-  textarea { width: 100%%; min-height: 8rem; font: inherit; padding: .8rem;
-             border: 1px solid currentColor; border-radius: 6px;
+  textarea { width: 100%%; min-height: 8rem;
+             font: 1em/1.4 ui-monospace, "SF Mono", "Cascadia Code",
+                   Consolas, monospace;
+             padding: .8rem; border: 1px solid currentColor; border-radius: 6px;
              background: transparent; color: inherit; box-sizing: border-box; }
   button { font: inherit; padding: .6rem 1.4rem; margin-top: .8rem;
            border-radius: 6px; border: 1px solid currentColor;
@@ -458,7 +514,7 @@ async function rafraichir() {
   }
   j.innerHTML = r.messages.map(m =>
     `<li><span class="quand">${m.quand}</span>${echapper(m.texte)}` +
-    `<span class="machine">${echapper(m.machine)}</span>` +
+    `<span class="machine">${echapper(m.machine)} — ${echapper(m.qui || '?')}</span>` +
     `<span class="etat">${echapper(m.etat)}</span></li>`).join('');
 }
 rafraichir(); setInterval(rafraichir, 4000);
@@ -484,6 +540,8 @@ def bloc_machines(printers):
 class Handler(BaseHTTPRequestHandler):
     printers = {}          # cle -> Printer
     journal = []           # liste partagee
+    identifiants = None     # {utilisateur: mot_de_passe}, ou None = pas d'auth
+    debit = None             # LimiteDebit, ou None = pas de limite
 
     def _send(self, code, body, ctype="text/html; charset=utf-8"):
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -493,7 +551,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _qui(self):
+        """Verifie l'en-tete Basic Auth. Retourne le nom d'utilisateur si
+        valide, None sinon. Comparaison a temps constant (hmac) pour ne pas
+        laisser deviner un mot de passe par le temps de reponse."""
+        if self.identifiants is None:
+            return "anonyme"                     # pas d'auth configuree
+        entete = self.headers.get("Authorization", "")
+        if not entete.startswith("Basic "):
+            return None
+        try:
+            u, p = base64.b64decode(entete[6:]).decode("utf-8").split(":", 1)
+        except Exception:
+            return None
+        attendu = self.identifiants.get(u)
+        if attendu is not None and hmac.compare_digest(p, attendu):
+            return u
+        return None
+
+    def _refuser_auth(self):
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="Mots doux"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
+        if self._qui() is None:
+            return self._refuser_auth()
         chemin = urlparse(self.path).path
         if chemin == "/":
             self._send(200, PAGE % {"max": MAX_LEN,
@@ -509,6 +593,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "rien ici")
 
     def do_POST(self):
+        qui = self._qui()
+        if qui is None:
+            return self._refuser_auth()
         u = urlparse(self.path)
         if u.path != "/print":
             return self._send(404, "rien ici")
@@ -519,13 +606,16 @@ class Handler(BaseHTTPRequestHandler):
         if p is None:
             return self._send(400, "imprimante inconnue : %s" % html.escape(
                 str(cible)))
+        if self.debit is not None and not self.debit.autorise(qui):
+            return self._send(429, "trop de messages -- attends un peu avant "
+                                   "d'en renvoyer un autre")
         n = int(self.headers.get("Content-Length", 0))
         texte = self.rfile.read(n).decode("utf-8", "replace")[:MAX_LEN].strip()
         if not texte:
             return self._send(400, "message vide")
-        rang = p.submit(texte)
-        print("  -> %s, en file (%d) : %s"
-              % (cible, rang, texte.replace("\n", " / ")))
+        rang = p.submit(texte, qui)
+        print("  -> %s (%s), en file (%d) : %s"
+              % (cible, qui, rang, texte.replace("\n", " / ")))
         self._send(200, html.escape(texte))
 
     def log_message(self, *a):        # pas de log HTTP par requete
@@ -559,7 +649,18 @@ def main():
     ap.add_argument("--host", default="127.0.0.1",
                     help="127.0.0.1 (defaut) ou 0.0.0.0 pour le reseau local")
     ap.add_argument("--http-port", type=int, default=8575)
+    ap.add_argument("--credentials",
+                    help="JSON {\"ami\": \"mot de passe\", ...} pour exiger une "
+                         "authentification HTTP Basic. Fichier a garder HORS du "
+                         "depot git. OBLIGATOIRE avant d'exposer via Tailscale "
+                         "Funnel ou tout reseau non prive.")
+    ap.add_argument("--limite-horaire", type=int, default=10,
+                    help="messages max par utilisateur et par heure "
+                         "(defaut 10 ; 0 = pas de limite)")
     a = ap.parse_args()
+
+    Handler.identifiants = charger_identifiants(a.credentials)
+    Handler.debit = LimiteDebit(a.limite_horaire)
 
     fabriques = {
         "xerox": lambda: SortiePico(a.port, a.baud),
@@ -604,9 +705,15 @@ def main():
     srv = ThreadingHTTPServer((a.host, a.http_port), Handler)
     print("\nMots doux : http://%s:%d/"
           % ("localhost" if a.host == "127.0.0.1" else a.host, a.http_port))
+    if Handler.identifiants is None:
+        print("/!\\ AUCUNE authentification (--credentials non fourni) -- "
+              "ne JAMAIS exposer ainsi via Funnel ou tout reseau non prive.")
+    else:
+        print("authentification : %d identifiant(s) charge(s), limite %s/h"
+              % (len(Handler.identifiants), a.limite_horaire or "illimitee"))
     if a.host != "127.0.0.1":
-        print("/!\\ ouvert sur le reseau : aucune authentification, "
-              "reseau de confiance uniquement.")
+        print("/!\\ ouvert sur le reseau (%s) — assure-toi que c'est voulu."
+              % a.host)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
