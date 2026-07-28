@@ -10,8 +10,9 @@ After=network.target
 [Service]
 Type=simple
 User=__USER__
-# dialout : indispensable pour ouvrir /dev/ttyACM0 sans etre root.
-SupplementaryGroups=dialout
+# dialout : pour ouvrir /dev/ttyACM0 (le Pico) sans etre root.
+# lp      : pour ecrire sur /dev/usblp0 (la matricielle en Centronics).
+SupplementaryGroups=dialout lp
 WorkingDirectory=__REPO__
 ExecStart=/usr/bin/python3 __REPO__/tools/serve.py --host 0.0.0.0
 Restart=always

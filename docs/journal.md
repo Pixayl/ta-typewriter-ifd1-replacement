@@ -325,3 +325,15 @@ Deux défauts trouvés par les tests, avant tout branchement :
 - **Un périphérique débranché passait inaperçu** : la poignée de fichier restait ouverte sur l'inode disparu et les écritures se déclaraient réussies dans le vide. `ouvrir()` revalide maintenant le chemin.
 
 Non-régression de la sortie Pico vérifiée dans la même passe.
+
+## 2026-07-27 — 🖨️🖨️ LES DEUX IMPRIMANTES SUR UNE SEULE PAGE
+
+**La DMP ne recevait rien, et c'était un défaut de l'installeur, pas du matériel** : l'unité systemd lançait `serve.py` **sans `--backend`**, donc en mode `pico` par défaut. Le service cherchait le Pico (resté sur le Mac) et ne parlait jamais à la matricielle, qui pouvait bien être en ligne — personne ne lui adressait un octet. Deuxième défaut du même ordre : `install-pi.sh` n'ajoutait l'utilisateur qu'au groupe `dialout`, alors qu'écrire sur `/dev/usblp0` demande le groupe **`lp`**. L'unité déclare désormais `SupplementaryGroups=dialout lp` et l'installeur ajoute les deux.
+
+Le drapeau `--backend` a disparu au profit de quelque chose de mieux : **les deux imprimantes sont gérées en parallèle, et le destinataire se choisit à l'envoi.**
+- **Un fil d'exécution par imprimante** : chaque liaison reste strictement séquentielle (deux messages entrelacés désynchroniseraient les paires d'octets de la Xerox), mais les machines étant indépendantes, elles peuvent travailler en même temps.
+- **Journal commun**, sous verrou — deux fils peuvent y écrire — et chaque message étiqueté de sa machine.
+- **Page** : un bouton radio par imprimante, avec son **état en direct** (« prête (/dev/usblp0) », « absente », « injoignable : … »), rafraîchi en place sans recharger. Une machine absente s'affiche en pointillé.
+- `POST /print?cible=xerox|dmp` ; `--machines xerox,dmp` (les deux par défaut) permet de n'en proposer qu'une.
+
+Vérifié hors matériel : rendu des deux boutons, envoi vers chaque cible, octets réellement émis de chaque côté (`ESC E`/`ESC F` et cp437 pour la DMP, protocole ligne pour le Pico), étiquetage du journal, cible inconnue rejetée en 400, nom d'imprimante invalide refusé au lancement.

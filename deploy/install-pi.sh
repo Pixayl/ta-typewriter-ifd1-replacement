@@ -24,13 +24,16 @@ else
 fi
 
 # --- droits sur le port serie ----------------------------------------------
-if ! id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx dialout; then
-    echo "-- ajout de $USER_NAME au groupe dialout"
-    sudo usermod -aG dialout "$USER_NAME"
-    echo "   (prend effet a la prochaine session ; le service, lui, l'a deja)"
-else
-    echo "-- $USER_NAME est deja dans dialout"
-fi
+# dialout = port serie du Pico ; lp = port parallele de la matricielle.
+for GRP in dialout lp; do
+    if ! id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx "$GRP"; then
+        echo "-- ajout de $USER_NAME au groupe $GRP"
+        sudo usermod -aG "$GRP" "$USER_NAME"
+        echo "   (prend effet a la prochaine session ; le service, lui, l'a deja)"
+    else
+        echo "-- $USER_NAME est deja dans $GRP"
+    fi
+done
 
 # --- service ----------------------------------------------------------------
 echo "-- ecriture de $UNIT"

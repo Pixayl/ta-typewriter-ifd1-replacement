@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
-"""
+r"""
 serve.py — petite interface web pour envoyer des mots doux, sur deux imprimantes.
 
-DEUX SORTIES, une seule page web (file d'attente, journal et interface communs) :
+DEUX IMPRIMANTES, une seule page : le destinataire se choisit a l'envoi, et
+l'etat de chacune est affiche en direct. Un fil d'execution par imprimante, donc
+elles peuvent travailler en meme temps ; le journal des messages est commun.
 
-  --backend pico        Xerox 575 via le Pico (IFD-2), protocole IFD1
+  xerox   Xerox 575 via le Pico (IFD-2), protocole IFD1
       navigateur -> ce serveur -> USB -> Pico -> machine a ecrire
       Cote Pico, ifd2.run() doit tourner (deploye en main.py, voir
       pico/server_boot.py), et il faut presser ON LINE sur la machine.
       /!\ le port serie ne se partage pas : aucune session mpremote en cours.
 
-  --backend centronics  Amstrad DMP 3160 sur adaptateur USB <-> Centronics
+  dmp     Amstrad DMP 3160 sur adaptateur USB <-> Centronics
       navigateur -> ce serveur -> /dev/usblp0 -> matricielle
       Beaucoup plus simple : de l'ASCII brut, ni protocole a deux octets, ni
       accuse DTR, ni index de marguerite. Utile aussi pour tester toute la
       chaine (page, file, service) sans la Xerox ni le Pico.
 
 Exemples :
-    ./tools/serve.py                                   # Xerox, port detecte
-    ./tools/serve.py --backend centronics              # DMP, /dev/usblp0 detecte
-    ./tools/serve.py --backend centronics --sans-esc   # si le gras sort en charabia
-    ./tools/serve.py --host 0.0.0.0                    # visible sur le reseau local
+    ./tools/serve.py                        # les deux imprimantes, page au choix
+    ./tools/serve.py --machines dmp         # la matricielle seule
+    ./tools/serve.py --sans-esc             # si le gras DMP sort en charabia
+    ./tools/serve.py --host 0.0.0.0         # visible sur le reseau local
 
 Le serveur n'ecoute que sur 127.0.0.1 par defaut : il n'y a ni authentification
 ni limitation de debit, donc ne l'ouvrir au reseau que sur un reseau de confiance,
@@ -33,6 +35,7 @@ import queue
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
 import glob
 import os
@@ -289,24 +292,28 @@ class SortieCentronics(Sortie):
 
 # --------------------------------------------------------------- file d'attente
 class Printer(threading.Thread):
-    """Un seul fil parle au Pico : la liaison est sequentielle et lente, et deux
-    messages entrelaces desynchroniseraient le protocole (paires d'octets).
+    """UN fil par imprimante : chaque liaison est sequentielle (deux messages
+    entrelaces desynchroniseraient les paires d'octets de la Xerox), mais les
+    deux imprimantes sont independantes et peuvent donc travailler en meme temps.
 
-    Le serveur web ne depend PAS de la presence du Pico : sans lui la page
-    s'affiche quand meme et annonce l'imprimante absente. Sortir en erreur
-    quand le Pico n'est pas branche rendrait la page inaccessible au moment
-    precis ou on en a besoin pour diagnostiquer."""
+    Le serveur web ne depend PAS de la presence des imprimantes : sans elles la
+    page s'affiche quand meme et annonce leur absence. Sortir en erreur quand
+    rien n'est branche rendrait la page inaccessible au moment precis ou on en
+    a besoin pour comprendre pourquoi."""
 
     daemon = True
     ESSAIS = 3             # tentatives d'ouverture du port par message
     ATTENTE = 3            # secondes entre deux tentatives
 
-    def __init__(self, sortie):
+    def __init__(self, cle, sortie, journal, verrou):
         super().__init__()
         self.q = queue.Queue()
+        self.cle = cle
         self.sortie = sortie
-        self.log = []                      # derniers messages, pour la page
-        self.etat = "imprimante : recherche..."
+        self.journal = journal          # liste PARTAGEE entre les imprimantes
+        self.verrou = verrou
+        self.etat = "recherche..."
+        self.prete = False
 
     def submit(self, text):
         self.q.put(text)
@@ -319,9 +326,14 @@ class Printer(threading.Thread):
         """Tient l'etat a jour meme quand personne n'imprime, pour que la page
         dise la verite au lieu de rester sur un vieux message."""
         while True:
-            if self.sortie.disponible() is None:
+            ou = self.sortie.disponible()
+            if ou is None:
                 self.sortie.fermer()
                 self.etat = self.sortie.absente()
+                self.prete = False
+            elif not self.prete and self.q.empty():
+                self.etat = "prete (%s)" % ou
+                self.prete = True
             time.sleep(5)
 
     def run(self):
@@ -333,20 +345,26 @@ class Printer(threading.Thread):
                     ou = self.sortie.ouvrir()
                     self.sortie.imprimer(text, self._dire)
                     self._note(text, "imprime")
-                    self.etat = "%s prete (%s)" % (self.sortie.nom, ou)
+                    self.etat = "prete (%s)" % ou
+                    self.prete = True
                     break
                 except Exception as e:                  # lien coupe, absente
                     self.sortie.fermer()
-                    self.etat = "imprimante injoignable : %s" % e
+                    self.etat = "injoignable : %s" % e
+                    self.prete = False
                     if essai == self.ESSAIS:
                         self._note(text, "ECHEC : %s" % e)
                     else:
                         time.sleep(self.ATTENTE)
 
     def _note(self, text, etat):
-        self.log.insert(0, {"quand": time.strftime("%H:%M:%S"),
-                            "texte": text, "etat": etat})
-        del self.log[20:]
+        # journal commun aux deux imprimantes : verrou obligatoire, deux fils
+        # peuvent y ecrire en meme temps.
+        with self.verrou:
+            self.journal.insert(0, {"quand": time.strftime("%H:%M:%S"),
+                                    "texte": text, "etat": etat,
+                                    "machine": self.sortie.nom})
+            del self.journal[30:]
 
 
 # --------------------------------------------------------------------- page web
@@ -374,16 +392,25 @@ PAGE = """<!doctype html>
        border-bottom: 1px solid color-mix(in srgb, currentColor 12%%, transparent); }
   li .quand { opacity: .5; margin-right: .6rem; font-variant-numeric: tabular-nums; }
   li .etat { float: right; opacity: .6; font-size: .8rem; }
-  #machine { font-size: .85rem; padding: .5rem .8rem; border-radius: 6px;
-             margin-bottom: 1rem;
-             border: 1px solid color-mix(in srgb, currentColor 25%%, transparent); }
-  #machine.absente { border-style: dashed; opacity: .75; }
+  #machines { display: flex; flex-direction: column; gap: .5rem;
+              margin-bottom: 1.2rem; }
+  label.mach { display: flex; align-items: baseline; gap: .6rem;
+               font-size: .9rem; padding: .55rem .8rem; border-radius: 6px;
+               cursor: pointer;
+               border: 1px solid color-mix(in srgb, currentColor 25%%, transparent); }
+  label.mach:has(input:checked) { border-color: currentColor;
+               background: color-mix(in srgb, currentColor 7%%, transparent); }
+  label.mach.absente { border-style: dashed; opacity: .6; }
+  label.mach .nom { font-weight: 600; }
+  label.mach .etat { font-size: .8rem; opacity: .7; margin-left: auto;
+                     text-align: right; }
+  li .machine { opacity: .45; font-size: .75rem; margin-left: .5rem; }
 </style>
 <h1>Mots doux</h1>
-<p class="sub">Ça sort sur la Xerox 575, à la vitesse d'une machine à écrire.
+<p class="sub">Choisissez l'imprimante, écrivez, et ça sort sur le papier.
 Entourez un mot d'<code>*étoiles*</code> pour le mettre en gras.</p>
-<div id="machine">état…</div>
 <form id="f">
+  <div id="machines">%(machines)s</div>
   <textarea id="t" maxlength="%(max)d" placeholder="Écris quelque chose de gentil…"
             autofocus></textarea>
   <span class="compte"><span id="n">0</span>/%(max)d</span>
@@ -394,31 +421,54 @@ Entourez un mot d'<code>*étoiles*</code> pour le mettre en gras.</p>
 const t = document.getElementById('t'), n = document.getElementById('n'),
       b = document.getElementById('b'), j = document.getElementById('journal');
 t.oninput = () => n.textContent = t.value.length;
+const cible = () => document.querySelector('input[name=cible]:checked').value;
 document.getElementById('f').onsubmit = async (e) => {
   e.preventDefault();
   if (!t.value.trim()) return;
   b.disabled = true; b.textContent = 'Envoi…';
-  await fetch('/print', {method: 'POST', body: t.value});
+  await fetch('/print?cible=' + encodeURIComponent(cible()),
+              {method: 'POST', body: t.value});
   t.value = ''; n.textContent = '0';
   b.disabled = false; b.textContent = 'Imprimer';
   rafraichir();
 };
-const mach = document.getElementById('machine');
+const echapper = s => s.replace(/[<&]/g, c => ({'<':'&lt;','&':'&amp;'}[c]));
 async function rafraichir() {
   const r = await (await fetch('/journal')).json();
-  mach.textContent = r.etat;
-  mach.className = /absente|injoignable/.test(r.etat) ? 'absente' : '';
+  for (const m of r.machines) {
+    const l = document.querySelector(`label.mach[data-cle="${m.cle}"]`);
+    if (!l) continue;
+    l.querySelector('.etat').textContent = m.etat;
+    l.classList.toggle('absente', !m.prete);
+  }
   j.innerHTML = r.messages.map(m =>
-    `<li><span class="quand">${m.quand}</span>${m.texte.replace(/[<&]/g, c =>
-      ({'<':'&lt;','&':'&amp;'}[c]))}<span class="etat">${m.etat}</span></li>`).join('');
+    `<li><span class="quand">${m.quand}</span>${echapper(m.texte)}` +
+    `<span class="machine">${echapper(m.machine)}</span>` +
+    `<span class="etat">${echapper(m.etat)}</span></li>`).join('');
 }
 rafraichir(); setInterval(rafraichir, 4000);
 </script>
 </html>"""
 
 
+def bloc_machines(printers):
+    """Boutons radio des imprimantes, rendus cote serveur. Leur etat est ensuite
+    rafraichi en place par la page, sans la recharger."""
+    out = []
+    for n, (cle, p) in enumerate(printers.items()):
+        out.append(
+            '  <label class="mach" data-cle="%s">\n'
+            '    <input type="radio" name="cible" value="%s"%s>\n'
+            '    <span class="nom">%s</span>\n'
+            '    <span class="etat">…</span>\n'
+            '  </label>' % (cle, cle, " checked" if n == 0 else "",
+                            html.escape(p.sortie.nom)))
+    return "\n".join(out)
+
+
 class Handler(BaseHTTPRequestHandler):
-    printer = None
+    printers = {}          # cle -> Printer
+    journal = []           # liste partagee
 
     def _send(self, code, body, ctype="text/html; charset=utf-8"):
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -429,24 +479,38 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        if self.path == "/":
-            self._send(200, PAGE % {"max": MAX_LEN})
-        elif self.path == "/journal":
-            self._send(200, json.dumps({"etat": self.printer.etat,
-                                        "messages": self.printer.log}),
+        chemin = urlparse(self.path).path
+        if chemin == "/":
+            self._send(200, PAGE % {"max": MAX_LEN,
+                                    "machines": bloc_machines(self.printers)})
+        elif chemin == "/journal":
+            machines = [{"cle": cle, "nom": p.sortie.nom, "etat": p.etat,
+                         "prete": p.prete, "file": p.q.qsize()}
+                        for cle, p in self.printers.items()]
+            self._send(200, json.dumps({"machines": machines,
+                                        "messages": self.journal}),
                        "application/json; charset=utf-8")
         else:
             self._send(404, "rien ici")
 
     def do_POST(self):
-        if self.path != "/print":
+        u = urlparse(self.path)
+        if u.path != "/print":
             return self._send(404, "rien ici")
+        cible = (parse_qs(u.query).get("cible") or [None])[0]
+        if cible is None:                       # compatibilite : premiere machine
+            cible = next(iter(self.printers), None)
+        p = self.printers.get(cible)
+        if p is None:
+            return self._send(400, "imprimante inconnue : %s" % html.escape(
+                str(cible)))
         n = int(self.headers.get("Content-Length", 0))
         texte = self.rfile.read(n).decode("utf-8", "replace")[:MAX_LEN].strip()
         if not texte:
             return self._send(400, "message vide")
-        rang = self.printer.submit(texte)
-        print("  -> en file (%d) : %s" % (rang, texte.replace("\n", " / ")))
+        rang = p.submit(texte)
+        print("  -> %s, en file (%d) : %s"
+              % (cible, rang, texte.replace("\n", " / ")))
         self._send(200, html.escape(texte))
 
     def log_message(self, *a):        # pas de log HTTP par requete
@@ -457,9 +521,10 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--backend", choices=("pico", "centronics"), default="pico",
-                    help="pico = Xerox 575 via le Pico (defaut) ; "
-                         "centronics = matricielle DMP 3160 sur port parallele")
+    ap.add_argument("--machines", default="xerox,dmp",
+                    help="imprimantes a proposer, separees par des virgules : "
+                         "xerox (via le Pico), dmp (Centronics). "
+                         "Defaut : les deux — la page laisse choisir.")
     ap.add_argument("--port", help="sortie pico : port serie du Pico "
                                    "(detecte tout seul si omis)")
     ap.add_argument("--baud", type=int, default=115200)
@@ -477,38 +542,49 @@ def main():
     ap.add_argument("--http-port", type=int, default=8575)
     a = ap.parse_args()
 
-    if a.backend == "centronics":
-        sortie = SortieCentronics(a.device, encodage=a.encodage,
-                                  esc=not a.sans_esc)
-    else:
-        sortie = SortiePico(a.port, a.baud)
+    fabriques = {
+        "xerox": lambda: SortiePico(a.port, a.baud),
+        "dmp": lambda: SortieCentronics(a.device, encodage=a.encodage,
+                                       esc=not a.sans_esc),
+    }
+    demandees = [c.strip() for c in a.machines.split(",") if c.strip()]
+    inconnues = [c for c in demandees if c not in fabriques]
+    if inconnues:
+        raise SystemExit("imprimante inconnue : %s (attendu : %s)"
+                         % (", ".join(inconnues), ", ".join(fabriques)))
+    if not demandees:
+        raise SystemExit("aucune imprimante demandee")
 
-    # On NE sort PAS si l'imprimante est absente : la page doit rester
+    journal, verrou = [], threading.Lock()
+    Handler.journal = journal
+    Handler.printers = {}
+    for cle in demandees:
+        p = Printer(cle, fabriques[cle](), journal, verrou)
+        Handler.printers[cle] = p
+        p.start()
+
+    # On NE sort PAS si une imprimante est absente : la page doit rester
     # accessible, c'est justement la qu'on en a besoin pour comprendre pourquoi.
-    detecte = sortie.disponible()
-    if detecte:
-        print("%s : %s" % (sortie.nom, detecte))
-    else:
-        print("%s : absente pour l'instant — la page fonctionne, l'impression"
-              % sortie.nom)
-        print("    reprendra des qu'elle sera branchee. Verifier que :")
-        if a.backend == "pico":
-            print("    - le Pico est sur le port USB de donnees "
-                  "(celui du MILIEU sur un Zero W)")
-            print("    - aucune session mpremote ne tient le port (exclusivite)")
+    for cle, p in Handler.printers.items():
+        ou = p.sortie.disponible()
+        print("%-4s %-24s %s" % (cle, p.sortie.nom, ou or "ABSENTE"))
+        if ou:
+            continue
+        if cle == "xerox":
+            print("       - le Pico est-il sur le port USB de donnees "
+                  "(celui du MILIEU sur un Zero W) ?")
+            print("       - aucune session mpremote ne doit tenir le port "
+                  "(exclusivite)")
         else:
-            print("    - l'adaptateur USB<->Centronics est branche")
-            print("    - /dev/usblp0 existe (`lsusb`, `dmesg | tail`, "
+            print("       - l'adaptateur USB<->Centronics est-il branche ?")
+            print("       - /dev/usblp0 existe-t-il ? (`lsusb`, `dmesg | tail`, "
                   "`sudo modprobe usblp`)")
-            print("    - l'utilisateur a le droit d'y ecrire (groupe lp)")
-
-    Handler.printer = Printer(sortie)
-    Handler.printer.start()
+            print("       - l'utilisateur a-t-il le droit d'y ecrire "
+                  "(groupe lp) ?")
 
     srv = ThreadingHTTPServer((a.host, a.http_port), Handler)
-    print("Mots doux : http://%s:%d/   (sortie : %s)"
-          % ("localhost" if a.host == "127.0.0.1" else a.host,
-             a.http_port, sortie.nom))
+    print("\nMots doux : http://%s:%d/"
+          % ("localhost" if a.host == "127.0.0.1" else a.host, a.http_port))
     if a.host != "127.0.0.1":
         print("/!\\ ouvert sur le reseau : aucune authentification, "
               "reseau de confiance uniquement.")
