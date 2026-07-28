@@ -471,6 +471,8 @@ PAGE = """<!doctype html>
          margin: 4rem auto; padding: 0 1.5rem; }
   h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: .2rem; }
   p.sub { opacity: .65; margin-top: 0; font-size: .9rem; }
+  p.solde { opacity: .65; margin: 0 0 .8rem; font-size: .85rem;
+            font-variant-numeric: tabular-nums; }
   textarea { width: 100%%; min-height: 8rem;
              font: 1em/1.4 ui-monospace, "SF Mono", "Cascadia Code",
                    Consolas, monospace;
@@ -502,8 +504,9 @@ PAGE = """<!doctype html>
   li .machine { opacity: .45; font-size: .75rem; margin-left: .5rem; }
 </style>
 <h1>Mots doux</h1>
-<p class="sub">Choisissez l'imprimante, écrivez, et ça sort sur le papier.
+<p class="sub">%(intro)s
 Entourez un mot d'<code>*étoiles*</code> pour le mettre en gras.%(lien_admin)s</p>
+<p class="solde" id="solde"></p>
 <form id="f">
   <div id="machines">%(machines)s</div>
   <textarea id="t" maxlength="%(max)d" placeholder="Écris quelque chose de gentil…"
@@ -514,9 +517,11 @@ Entourez un mot d'<code>*étoiles*</code> pour le mettre en gras.%(lien_admin)s<
 <ul id="journal"></ul>
 <script>
 const t = document.getElementById('t'), n = document.getElementById('n'),
-      b = document.getElementById('b'), j = document.getElementById('journal');
+      b = document.getElementById('b'), j = document.getElementById('journal'),
+      s = document.getElementById('solde');
 t.oninput = () => n.textContent = t.value.length;
-const cible = () => document.querySelector('input[name=cible]:checked').value;
+const cible = () => (document.querySelector('input[name=cible]:checked')
+                     || document.querySelector('input[name=cible]')).value;
 document.getElementById('f').onsubmit = async (e) => {
   e.preventDefault();
   if (!t.value.trim()) return;
@@ -536,6 +541,8 @@ async function rafraichir() {
     l.querySelector('.etat').textContent = m.etat;
     l.classList.toggle('absente', !m.prete);
   }
+  s.textContent = r.mon_solde === 'illimite' ? 'Crédits : illimités' :
+    `Crédits : ${r.mon_solde} restant${r.mon_solde === 1 ? '' : 's'}`;
   j.innerHTML = r.messages.map(m =>
     `<li><span class="quand">${m.quand}</span>${echapper(m.texte)}` +
     `<span class="machine">${echapper(m.machine)} — ${echapper(m.qui || '?')}</span>` +
@@ -588,9 +595,14 @@ rafraichir();
 </html>"""
 
 
-def bloc_machines(printers):
-    """Boutons radio des imprimantes, rendus cote serveur. Leur etat est ensuite
-    rafraichi en place par la page, sans la recharger."""
+def bloc_machines(printers, admin):
+    """Boutons radio des imprimantes, avec etat en direct -- reserve aux
+    administrateurs (on ne montre pas a un ami quelles machines physiques
+    existent ni leur etat). Pour les autres, une cible fixe et invisible :
+    la premiere imprimante configuree (ordre de --machines)."""
+    if not admin:
+        cle = next(iter(printers), "")
+        return '<input type="hidden" name="cible" value="%s">' % html.escape(cle)
     out = []
     for n, (cle, p) in enumerate(printers.items()):
         out.append(
@@ -651,16 +663,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._refuser_auth()
         chemin = urlparse(self.path).path
         if chemin == "/":
-            lien_admin = (' — <a href="/admin">administration</a>'
-                         if self._est_admin(qui) else '')
+            admin = self._est_admin(qui)
+            lien_admin = ' — <a href="/admin">administration</a>' if admin else ''
+            intro = ("Choisissez l'imprimante, écrivez, et ça sort sur le papier."
+                     if admin else "Écrivez, et ça sort sur le papier.")
             self._send(200, PAGE % {"max": MAX_LEN, "lien_admin": lien_admin,
-                                    "machines": bloc_machines(self.printers)})
+                                    "intro": intro,
+                                    "machines": bloc_machines(self.printers, admin)})
         elif chemin == "/journal":
+            admin = self._est_admin(qui)
+            # Les imprimantes (existence, etat, chemin systeme) restent privees :
+            # un ami curieux ouvrant les outils reseau du navigateur ne doit pas
+            # en apprendre plus que ce que montre la page.
             machines = [{"cle": cle, "nom": p.sortie.nom, "etat": p.etat,
                          "prete": p.prete, "file": p.q.qsize()}
-                        for cle, p in self.printers.items()]
+                        for cle, p in self.printers.items()] if admin else []
+            messages = self.journal if admin else \
+                [m for m in self.journal if m.get("qui") == qui]
+            mon_solde = (self.credits.etat().get(qui, "illimite")
+                        if self.credits else "illimite")
             self._send(200, json.dumps({"machines": machines,
-                                        "messages": self.journal}),
+                                        "messages": messages,
+                                        "mon_solde": mon_solde}),
                        "application/json; charset=utf-8")
         elif chemin == "/admin":
             if not self._est_admin(qui):
