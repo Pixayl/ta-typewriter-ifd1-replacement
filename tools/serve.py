@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 r"""
-serve.py — petite interface web pour envoyer des mots doux, sur deux imprimantes.
+serve.py — interface web « teleimprimeur » : des amis envoient des messages,
+ils sortent en vrai sur du papier, sur l'une des deux imprimantes.
 
 DEUX IMPRIMANTES, une seule page : le destinataire se choisit a l'envoi, et
 l'etat de chacune est affiche en direct. Un fil d'execution par imprimante, donc
@@ -433,10 +434,15 @@ class Printer(threading.Thread):
         threading.Thread(target=self.veiller, daemon=True).start()
         while True:
             text, qui = self.q.get()
+            # En-tete imprime AVANT le message : sur le papier, on ne sait pas
+            # qui ecrit ni quand. Ajoute ici (et pas dans les backends) pour
+            # servir les deux imprimantes d'un seul endroit ; le journal, lui,
+            # garde le texte brut -- l'expediteur et l'heure y figurent deja.
+            a_imprimer = "%s, %s\n%s" % (qui, time.strftime("%H:%M"), text)
             for essai in range(1, self.ESSAIS + 1):
                 try:
                     ou = self.sortie.ouvrir()
-                    self.sortie.imprimer(text, self._dire)
+                    self.sortie.imprimer(a_imprimer, self._dire)
                     self._note(text, "imprime", qui)
                     self.etat = "prete (%s)" % ou
                     self.prete = True
@@ -464,75 +470,109 @@ class Printer(threading.Thread):
 PAGE = """<!doctype html>
 <html lang="fr"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mots doux — Xerox 575</title>
+<title>Téléimprimeur — Xerox 575</title>
 <style>
   :root {
     color-scheme: light dark;
     --encre: #8a2f3b;              /* rouge-ruban : accent, jamais le texte courant */
     --encre-douce: color-mix(in srgb, var(--encre) 14%%, transparent);
+    --papier: #faf7ef;             /* la feuille */
+    --bureau: #ddd7c9;             /* le plan de travail sous la feuille */
+    --texte:  #2b2926;
+    --trou:   #ddd7c9;             /* perforations d'entrainement */
     --ok: #3a7a4a; --ko: #a33d2e;  /* semantique, distincte de l'accent */
   }
   @media (prefers-color-scheme: dark) {
-    :root { --encre: #e2919c; --ok: #6bbf7e; --ko: #e0796a; }
+    :root { --encre: #e2919c; --papier: #17191e; --bureau: #0b0c0f;
+            --texte: #ded9d0; --trou: #0b0c0f; --ok: #6bbf7e; --ko: #e0796a; }
   }
   * { box-sizing: border-box; }
-  body { font: 16px/1.6 ui-serif, Georgia, serif; max-width: 34rem;
-         margin: 4rem auto; padding: 0 1.5rem; }
-  h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: .01em;
-       margin-bottom: .2rem; }
+  body { font: 15px/1.65 ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+         color: var(--texte); background: var(--bureau);
+         margin: 0; padding: 2.5rem 1rem; }
+
+  /* La feuille de listing : bandes perforees le long des deux bords, comme le
+     papier continu qui sort vraiment de la machine. */
+  .feuille { position: relative; max-width: 38rem; margin: 0 auto;
+             background: var(--papier); padding: 2.2rem 3.4rem;
+             box-shadow: 0 1px 3px #0002, 0 12px 28px -12px #0003; }
+  .feuille::before, .feuille::after {
+    content: ""; position: absolute; top: 0; bottom: 0; width: 2.2rem;
+    background-image: radial-gradient(circle at center,
+                      var(--trou) 0 3.5px, transparent 3.6px);
+    background-size: 100%% 1.15rem;
+    border-color: color-mix(in srgb, var(--texte) 22%%, transparent);
+    border-style: dashed; border-width: 0; }
+  .feuille::before { left: 0;  border-right-width: 1px; }
+  .feuille::after  { right: 0; border-left-width: 1px; }
+
+  h1 { font-size: 1.15rem; font-weight: 700; letter-spacing: .22em;
+       text-transform: uppercase; margin: 0 0 .1rem; }
+  h1 .machine-nom { display: block; font-size: .65rem; letter-spacing: .3em;
+                    font-weight: 400; color: var(--encre); margin-top: .35rem; }
   a { color: var(--encre); text-decoration: none;
       border-bottom: 1px solid color-mix(in srgb, var(--encre) 45%%, transparent); }
   a:hover { border-color: var(--encre); }
-  p.sub { opacity: .65; margin-top: 0; font-size: .9rem; }
-  p.solde { display: inline-block; margin: 0 0 1.1rem; padding: .2rem .6rem;
-            font-size: .8rem; border-radius: 99px; background: var(--encre-douce);
+  p.sub { opacity: .7; margin: 1.4rem 0 1rem; font-size: .8rem; line-height: 1.7; }
+  p.solde { display: inline-block; margin: 0 0 1.2rem; padding: .25rem .7rem;
+            font-size: .72rem; letter-spacing: .08em; text-transform: uppercase;
+            border: 1px solid var(--encre); color: var(--encre);
             font-variant-numeric: tabular-nums; }
-  textarea { width: 100%%; min-height: 8rem;
-             font: 1em/1.4 ui-monospace, "SF Mono", "Cascadia Code",
-                   Consolas, monospace;
-             padding: .8rem; border: 1px solid color-mix(in srgb, currentColor 30%%, transparent);
-             border-radius: 8px; background: transparent; color: inherit;
+  textarea { width: 100%%; min-height: 8rem; font: 1em/1.5 inherit;
+             padding: .9rem; background: transparent; color: inherit;
+             border: 1px solid color-mix(in srgb, var(--texte) 28%%, transparent);
              transition: border-color .15s; }
   textarea:focus { outline: none; border-color: var(--encre); }
-  button { font: inherit; font-weight: 600; padding: .6rem 1.5rem; margin-top: .9rem;
-           border-radius: 8px; border: 1px solid var(--encre);
-           background: transparent; color: var(--encre); cursor: pointer;
+  button { font: inherit; font-weight: 700; letter-spacing: .12em;
+           text-transform: uppercase; font-size: .8rem;
+           padding: .65rem 1.6rem; margin-top: .9rem;
+           border: 1px solid var(--encre); background: transparent;
+           color: var(--encre); cursor: pointer;
            transition: background-color .15s, color .15s; }
-  button:hover:not(:disabled) { background: var(--encre); color: #fff; }
+  button:hover:not(:disabled) { background: var(--encre); color: var(--papier); }
   button:disabled { opacity: .4; cursor: wait; }
-  .compte { float: right; font-size: .85rem; opacity: .6; }
-  ul { list-style: none; padding: 0; margin-top: 2.5rem;
-       border-top: 1px solid; border-color: color-mix(in srgb, currentColor 20%%, transparent); }
-  li { padding: .6rem 0; font-size: .9rem;
-       border-bottom: 1px solid color-mix(in srgb, currentColor 12%%, transparent); }
+  .compte { float: right; font-size: .75rem; opacity: .55;
+            font-variant-numeric: tabular-nums; }
+  ul { list-style: none; padding: 0; margin: 2.5rem 0 0;
+       border-top: 1px dashed color-mix(in srgb, var(--texte) 25%%, transparent); }
+  li { padding: .65rem 0; font-size: .82rem;
+       border-bottom: 1px dashed color-mix(in srgb, var(--texte) 15%%, transparent); }
   li .quand { opacity: .5; margin-right: .6rem; font-variant-numeric: tabular-nums; }
-  li .etat { float: right; opacity: .75; font-size: .8rem; }
+  li .etat { float: right; opacity: .75; font-size: .72rem;
+             letter-spacing: .06em; text-transform: uppercase; }
   li.echec .etat { color: var(--ko); opacity: 1; }
   li.imprime .etat { color: var(--ok); }
-  #machines { display: flex; flex-direction: column; gap: .5rem;
+  li .machine { opacity: .45; font-size: .7rem; margin-left: .5rem; }
+  #machines { display: flex; flex-direction: column; gap: .45rem;
               margin-bottom: 1.2rem; }
   label.mach { display: flex; align-items: baseline; gap: .6rem;
-               font-size: .9rem; padding: .55rem .8rem; border-radius: 8px;
-               cursor: pointer; transition: border-color .15s, background-color .15s;
-               border: 1px solid color-mix(in srgb, currentColor 25%%, transparent); }
+               font-size: .8rem; padding: .5rem .75rem; cursor: pointer;
+               transition: border-color .15s, background-color .15s;
+               border: 1px solid color-mix(in srgb, var(--texte) 22%%, transparent); }
   label.mach:has(input:checked) { border-color: var(--encre); background: var(--encre-douce); }
-  label.mach.absente { border-style: dashed; opacity: .6; }
-  label.mach .nom { font-weight: 600; }
-  label.mach .etat { font-size: .8rem; opacity: .7; margin-left: auto;
+  label.mach.absente { border-style: dashed; opacity: .55; }
+  label.mach .nom { font-weight: 700; }
+  label.mach .etat { font-size: .72rem; opacity: .7; margin-left: auto;
                      text-align: right; }
-  li .machine { opacity: .45; font-size: .75rem; margin-left: .5rem; }
+  @media (max-width: 34rem) {
+    body { padding: 1rem .4rem; }
+    .feuille { padding: 1.6rem 2.6rem; }
+    .feuille::before, .feuille::after { width: 1.6rem; }
+  }
 </style>
-<h1>Mots doux</h1>
+<div class="feuille">
+<h1>Téléimprimeur<span class="machine-nom">Xerox 575 &middot; Hasnon</span></h1>
 <p class="sub">%(intro)s%(lien_admin)s</p>
 <p class="solde" id="solde"></p>
 <form id="f">
   <div id="machines">%(machines)s</div>
-  <textarea id="t" maxlength="%(max)d" placeholder="Écris quelque chose de gentil…"
+  <textarea id="t" maxlength="%(max)d" placeholder="Votre message…"
             autofocus></textarea>
   <span class="compte"><span id="n">0</span>/%(max)d</span>
-  <button id="b">Imprimer</button>
+  <button id="b">Envoyer à l'imprimante</button>
 </form>
 <ul id="journal"></ul>
+</div>
 <script>
 const t = document.getElementById('t'), n = document.getElementById('n'),
       b = document.getElementById('b'), j = document.getElementById('journal'),
@@ -575,14 +615,15 @@ rafraichir(); setInterval(rafraichir, 4000);
 PAGE_ADMIN = """<!doctype html>
 <html lang="fr"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Comptes — Mots doux</title>
+<title>Comptes — Téléimprimeur</title>
 <style>
   :root { color-scheme: light dark; --encre: #8a2f3b; }
   @media (prefers-color-scheme: dark) { :root { --encre: #e2919c; } }
-  body { font: 16px/1.5 ui-serif, Georgia, serif; max-width: 30rem;
+  body { font: 15px/1.6 ui-monospace, "SF Mono", "Cascadia Code",
+               Consolas, monospace; max-width: 30rem;
          margin: 4rem auto; padding: 0 1.5rem; }
-  h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: .01em;
-       margin-bottom: 1rem; }
+  h1 { font-size: 1.1rem; font-weight: 700; letter-spacing: .2em;
+       text-transform: uppercase; margin-bottom: 1.2rem; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: .5rem .3rem;
            border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
@@ -691,8 +732,14 @@ class Handler(BaseHTTPRequestHandler):
         if chemin == "/":
             admin = self._est_admin(qui)
             lien_admin = ' — <a href="/admin">administration</a>' if admin else ''
-            intro = ("Choisissez l'imprimante, écrivez, et ça sort sur le papier."
-                     if admin else "Écrivez, et ça sort sur le papier.")
+            regles = (
+                "Ce que vous écrivez ici est <strong>réellement imprimé</strong>, "
+                "à l'encre et sur papier, par une machine à écrire de 1985 "
+                "installée chez moi. Votre pseudo et l'heure sont tapés en "
+                "tête du message. Chaque envoi coûte <strong>1 crédit</strong> ; "
+                "quand vous n'en avez plus, demandez-en à l'administrateur.")
+            intro = (regles + " Vous choisissez l'imprimante ci-dessous."
+                     if admin else regles)
             self._send(200, PAGE % {"max": MAX_LEN, "lien_admin": lien_admin,
                                     "intro": intro,
                                     "machines": bloc_machines(self.printers, admin)})
