@@ -148,6 +148,27 @@ class Limite:
 LIMITE_DEFAUT = 2000   # la machine tape ~1 caractere/seconde -- deja long a l'oreille
 
 
+class Connexions:
+    """Detecte une NOUVELLE connexion par utilisateur, pour imprimer
+    "X s'est connecte" sans spammer le papier a chaque rechargement de page
+    ou sondage /journal (toutes les 4s cote JS)."""
+
+    FENETRE = 1800   # 30 min sans revenir = on considere que c'est une nouvelle visite
+
+    def __init__(self):
+        self.vu = {}
+        self.verrou = threading.Lock()
+
+    def nouvelle(self, qui):
+        """True la premiere fois qu'on voit `qui`, ou s'il n'etait pas revenu
+        depuis FENETRE secondes. Met a jour la derniere visite dans tous les cas."""
+        now = time.time()
+        with self.verrou:
+            dernier = self.vu.get(qui)
+            self.vu[qui] = now
+            return dernier is None or (now - dernier) > self.FENETRE
+
+
 def trouver_port():
     """Cherche le Pico sur le bus. Sur Mac les ports sont /dev/cu.usbmodemXXXX
     (numero variable selon la prise !), sur Linux /dev/ttyACM0."""
@@ -735,6 +756,7 @@ class Handler(BaseHTTPRequestHandler):
     identifiants = None     # {utilisateur: mot_de_passe}, ou None = pas d'auth
     credits = None            # instance de Credits, ou None = pas de limite
     limite = Limite(LIMITE_DEFAUT)   # longueur max, modifiable via /admin
+    connexions = Connexions()
 
     def _send(self, code, body, ctype="text/html; charset=utf-8"):
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -772,12 +794,24 @@ class Handler(BaseHTTPRequestHandler):
         return (self.identifiants is not None
                 and self.identifiants.get(qui, {}).get("admin", False))
 
+    def _cible_disponible(self):
+        """Priorite a une imprimante DISPONIBLE maintenant ; sinon la
+        premiere configuree (le message se met en file et affichera
+        clairement qu'elle est injoignable, plutot que de se perdre)."""
+        dispo = [c for c, p in self.printers.items() if p.prete]
+        return dispo[0] if dispo else next(iter(self.printers), None)
+
     def do_GET(self):
         qui = self._qui()
         if qui is None:
             return self._refuser_auth()
         chemin = urlparse(self.path).path
         if chemin == "/":
+            if self.connexions.nouvelle(qui):
+                cible = self._cible_disponible()
+                p = self.printers.get(cible)
+                if p is not None:
+                    p.submit("%s s'est connecté" % qui, "système")
             admin = self._est_admin(qui)
             lien_admin = ' — <a href="/admin">administration</a>' if admin else ''
             intro = (
@@ -867,11 +901,7 @@ class Handler(BaseHTTPRequestHandler):
         if self._est_admin(qui) and demandee in self.printers:
             cible = demandee                    # choix explicite, respecte tel quel
         else:
-            # priorite a une imprimante DISPONIBLE maintenant ; sinon la
-            # premiere configuree (le message se met en file et affichera
-            # clairement qu'elle est injoignable, plutot que de se perdre).
-            dispo = [c for c, pr in self.printers.items() if pr.prete]
-            cible = dispo[0] if dispo else next(iter(self.printers), None)
+            cible = self._cible_disponible()
         p = self.printers.get(cible)
         if p is None:
             return self._send(400, "imprimante inconnue : %s" % html.escape(
