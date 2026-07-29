@@ -127,7 +127,25 @@ class Credits:
                     for u, s in self.solde.items()}
 
 
-MAX_LEN = 500          # garde-fou : la machine tape ~1 caractere/seconde
+class Limite:
+    """Longueur max d'un message, modifiable a chaud par un admin (page
+    /admin) -- pas besoin de relancer serve.py pour l'ajuster."""
+
+    def __init__(self, defaut):
+        self.valeur = defaut
+        self.verrou = threading.Lock()
+
+    def lire(self):
+        with self.verrou:
+            return self.valeur
+
+    def definir(self, n):
+        with self.verrou:
+            self.valeur = max(1, min(n, 20000))   # garde-fou large mais borne
+            return self.valeur
+
+
+LIMITE_DEFAUT = 2000   # la machine tape ~1 caractere/seconde -- deja long a l'oreille
 
 
 def trouver_port():
@@ -635,16 +653,38 @@ PAGE_ADMIN = """<!doctype html>
   button:hover { background: var(--encre); color: #fff; }
   a { color: var(--encre); text-decoration: none;
       border-bottom: 1px solid color-mix(in srgb, var(--encre) 45%, transparent); }
+  section { margin-top: 2rem; padding-top: 1rem;
+            border-top: 1px dashed color-mix(in srgb, currentColor 20%, transparent); }
+  section h2 { font-size: .85rem; letter-spacing: .1em; text-transform: uppercase;
+               opacity: .7; margin: 0 0 .6rem; }
+  input[type=number] { font: inherit; width: 6rem; padding: .3rem .5rem;
+            background: transparent; color: inherit;
+            border: 1px solid color-mix(in srgb, currentColor 30%, transparent); }
 </style>
 <h1>Comptes</h1>
 <p><a href="/">← retour</a></p>
 <table><thead><tr><th>Utilisateur</th><th>Solde</th><th></th></tr></thead>
 <tbody id="lignes"></tbody></table>
+<section>
+  <h2>Longueur max d'un message</h2>
+  <input type="number" id="lim" min="1" max="20000">
+  <button onclick="changerLimite()">Enregistrer</button>
+  <span id="lim-etat" style="opacity:.6; font-size:.8rem"></span>
+</section>
 <script>
 async function ajuster(qui, delta) {
   await fetch('/admin/credit?qui=' + encodeURIComponent(qui) + '&delta=' + delta,
               {method: 'POST'});
   rafraichir();
+}
+async function changerLimite() {
+  const v = document.getElementById('lim').value;
+  const r = await (await fetch('/admin/limite?valeur=' + encodeURIComponent(v),
+                               {method: 'POST'})).json();
+  document.getElementById('lim').value = r.limite;
+  const e = document.getElementById('lim-etat');
+  e.textContent = 'enregistre (' + r.limite + ')';
+  setTimeout(() => e.textContent = '', 2000);
 }
 async function rafraichir() {
   const soldes = await (await fetch('/admin/soldes')).json();
@@ -656,6 +696,8 @@ async function rafraichir() {
         `<button onclick="ajuster('${qui}',1)">+1</button>` +
         `<button onclick="ajuster('${qui}',5)">+5</button>`) +
       `</td></tr>`).join('');
+  const l = await (await fetch('/admin/limite')).json();
+  document.getElementById('lim').value = l.limite;
 }
 rafraichir();
 </script>
@@ -692,6 +734,7 @@ class Handler(BaseHTTPRequestHandler):
     journal = []           # liste partagee
     identifiants = None     # {utilisateur: mot_de_passe}, ou None = pas d'auth
     credits = None            # instance de Credits, ou None = pas de limite
+    limite = Limite(LIMITE_DEFAUT)   # longueur max, modifiable via /admin
 
     def _send(self, code, body, ctype="text/html; charset=utf-8"):
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -745,7 +788,7 @@ class Handler(BaseHTTPRequestHandler):
                 "Votre pseudo et l'heure sont tapés en tête du message. "
                 "Chaque envoi coûte <strong>1 crédit</strong> ; quand vous "
                 "n'en avez plus, demandez-en à l'administrateur.")
-            self._send(200, PAGE % {"max": MAX_LEN, "lien_admin": lien_admin,
+            self._send(200, PAGE % {"max": self.limite.lire(), "lien_admin": lien_admin,
                                     "intro": intro,
                                     "machines": bloc_machines(self.printers, admin)})
         elif chemin == "/journal":
@@ -774,6 +817,11 @@ class Handler(BaseHTTPRequestHandler):
             soldes = self.credits.etat() if self.credits else {}
             self._send(200, json.dumps(soldes),
                        "application/json; charset=utf-8")
+        elif chemin == "/admin/limite":
+            if not self._est_admin(qui):
+                return self._send(403, "reserve aux administrateurs")
+            self._send(200, json.dumps({"limite": self.limite.lire()}),
+                       "application/json; charset=utf-8")
         else:
             self._send(404, "rien ici")
 
@@ -801,6 +849,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(self.credits.etat()),
                               "application/json; charset=utf-8")
 
+        if u.path == "/admin/limite":
+            if not self._est_admin(qui):
+                return self._send(403, "reserve aux administrateurs")
+            try:
+                n = int((parse_qs(u.query).get("valeur") or [""])[0])
+            except ValueError:
+                return self._send(400, "valeur invalide")
+            nouvelle = self.limite.definir(n)
+            print("  -> limite de longueur changee a %d par %s" % (nouvelle, qui))
+            return self._send(200, json.dumps({"limite": nouvelle}),
+                              "application/json; charset=utf-8")
+
         if u.path != "/print":
             return self._send(404, "rien ici")
         demandee = (parse_qs(u.query).get("cible") or [None])[0]
@@ -820,7 +880,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(429, "plus de credits -- demande a un "
                                    "administrateur d'en ajouter")
         n = int(self.headers.get("Content-Length", 0))
-        texte = self.rfile.read(n).decode("utf-8", "replace")[:MAX_LEN].strip()
+        texte = self.rfile.read(n).decode("utf-8", "replace")[:self.limite.lire()].strip()
         if not texte:
             return self._send(400, "message vide")
         rang = p.submit(texte, qui)
@@ -865,10 +925,15 @@ def main():
                          "tools/credentials.json.example. Fichier a garder "
                          "HORS du depot git. OBLIGATOIRE avant d'exposer via "
                          "Tailscale Funnel ou tout reseau non prive.")
+    ap.add_argument("--max-caracteres", type=int, default=LIMITE_DEFAUT,
+                    help="longueur max d'un message au demarrage (defaut "
+                         "%d) -- ajustable ensuite a chaud depuis /admin, "
+                         "sans relancer le serveur." % LIMITE_DEFAUT)
     a = ap.parse_args()
 
     Handler.identifiants = charger_identifiants(a.credentials)
     Handler.credits = Credits(Handler.identifiants) if Handler.identifiants else None
+    Handler.limite = Limite(a.max_caracteres)
 
     fabriques = {
         "xerox": lambda: SortiePico(a.port, a.baud),
