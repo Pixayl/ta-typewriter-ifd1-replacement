@@ -737,14 +737,14 @@ class Handler(BaseHTTPRequestHandler):
         if chemin == "/":
             admin = self._est_admin(qui)
             lien_admin = ' — <a href="/admin">administration</a>' if admin else ''
-            regles = (
+            intro = (
                 "Ce que vous écrivez ici est <strong>réellement imprimé</strong>, "
-                "à l'encre et sur papier, par une machine à écrire de 1985 "
-                "installée chez moi. Votre pseudo et l'heure sont tapés en "
-                "tête du message. Chaque envoi coûte <strong>1 crédit</strong> ; "
-                "quand vous n'en avez plus, demandez-en à l'administrateur.")
-            intro = (regles + " Vous choisissez l'imprimante ci-dessous."
-                     if admin else regles)
+                "à l'encre et sur papier, chez moi — sur une imprimante "
+                "matricielle (tzzzzt tzzzt tzzzt) ou une machine à écrire "
+                "(tchak tchak tchak), selon la configuration du moment. "
+                "Votre pseudo et l'heure sont tapés en tête du message. "
+                "Chaque envoi coûte <strong>1 crédit</strong> ; quand vous "
+                "n'en avez plus, demandez-en à l'administrateur.")
             self._send(200, PAGE % {"max": MAX_LEN, "lien_admin": lien_admin,
                                     "intro": intro,
                                     "machines": bloc_machines(self.printers, admin)})
